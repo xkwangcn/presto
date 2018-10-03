@@ -1,60 +1,47 @@
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-FROM centos:centos7
-LABEL maintainer="Presto community <https://prestosql.io/community.html>"
+FROM fedora:28 as build
 
-ENV JAVA_HOME /usr/lib/jvm/java-11
-RUN \
-    set -xeu && \
-    yum -y -q update && \
-    yum -y -q install java-11-openjdk-devel less && \
-    yum -q clean all && \
-    rm -rf /var/cache/yum && \
-    rm -rf /tmp/* /var/tmp/*
+RUN yum -y update && yum clean all
 
-RUN \
-    set -xeu && \
-    mkdir -p /data/presto
+RUN yum -y install java-1.8.0-openjdk maven \
+    && yum clean all \
+    && rm -rf /var/cache/yum
 
-ARG PRESTO_VERSION
-ARG PRESTO_LOCATION=presto-server/target/presto-server-${PRESTO_VERSION}.tar.gz
-ADD ${PRESTO_LOCATION} /tmp
+RUN mkdir /build
+COPY . /build
 
-ARG CLIENT_VERSION=${PRESTO_VERSION}
-ARG CLIENT_LOCATION=presto-cli/target/presto-cli-${CLIENT_VERSION}-executable.jar
-ADD ${CLIENT_LOCATION} /usr/bin/presto
+# Install presto-server
+RUN cd /build/presto-server && mvn -B -e -T 1C -DskipTests -DfailIfNoTests=false -Dtest=false package
+# Install presto-cli
+RUN cd /build/presto-cli && mvn -B -e -T 1C -DskipTests -DfailIfNoTests=false -Dtest=false package
+# Install prometheus-jmx agent
+RUN mvn dependency:get -Dartifact=io.prometheus.jmx:jmx_prometheus_javaagent:0.3.1:jar -Ddest=/build/jmx_prometheus_javaagent.jar
 
-RUN \
-    set -xeu && \
-    if [[ ! -d /tmp/presto-server-${PRESTO_VERSION} ]]; then \
-        tar -C /tmp -xzf /tmp/presto-server-${PRESTO_VERSION}.tar.gz && \
-        rm /tmp/presto-server-${PRESTO_VERSION}.tar.gz; \
-    fi && \
-    cp -r /tmp/presto-server-${PRESTO_VERSION} /usr/lib/presto && \
-    rm -r /tmp/presto-server-${PRESTO_VERSION} && \
-    chmod 755 /usr/bin/presto
+FROM centos:7
 
-COPY presto-docker-image/bin /usr/lib/presto/bin
-COPY presto-docker-image/etc /usr/lib/presto/default/etc
+RUN yum -y install java-1.8.0-openjdk \
+    && yum clean all \
+    && rm -rf /var/cache/yum
+
+RUN mkdir -p /opt/presto
+
+ENV PRESTO_VERSION 0.212
+ENV PRESTO_HOME /opt/presto/presto-server
+ENV PRESTO_CLI /opt/presto/presto-cli
+ENV PROMETHEUS_JMX_EXPORTER /opt/jmx_exporter/jmx_exporter.jar
+ENV TERM linux
+ENV HOME /opt/presto
+
+RUN mkdir -p $PRESTO_HOME
+
+RUN useradd presto -m -u 1003 -d /opt/presto
+
+COPY --from=build /build/presto-server/target/presto-server-$PRESTO_VERSION $PRESTO_HOME
+COPY --from=build /build/presto-cli/target/presto-cli-$PRESTO_VERSION.jar $PRESTO_CLI
+COPY --from=build /build/jmx_prometheus_javaagent.jar $PROMETHEUS_JMX_EXPORTER
+
+RUN ln $PRESTO_CLI /usr/local/bin/presto-cli \
+        && chmod 755 /usr/local/bin/presto-cli
 
 EXPOSE 8080
-
-RUN \
-    set -xeu && \
-    groupadd presto --gid 1000 && \
-    useradd presto --uid 1000 --gid 1000 && \
-    chown -R "presto:presto" /usr/lib/presto /data/presto
-
-USER presto:presto
-CMD ["/usr/lib/presto/bin/run-presto"]
+WORKDIR $PRESTO_HOME
+CMD ["bin/launcher", "run"]
