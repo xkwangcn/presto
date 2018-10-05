@@ -1215,6 +1215,14 @@
                 </plugin>
 
                 <plugin>
+                    <groupId>com.ning.maven.plugins</groupId>
+                    <artifactId>maven-dependency-versions-check-plugin</artifactId>
+                    <configuration>
+                        <failBuildInCaseOfConflict>false</failBuildInCaseOfConflict>
+                    </configuration>
+                </plugin>
+
+                <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-enforcer-plugin</artifactId>
                     <configuration>
