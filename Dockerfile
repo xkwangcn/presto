@@ -60,6 +60,7 @@ COPY presto-parquet /build/presto-parquet
 COPY presto-proxy /build/presto-proxy
 COPY presto-hive-hadoop2 /build/presto-hive-hadoop2
 COPY presto-benchto-benchmarks /build/presto-benchto-benchmarks
+COPY presto-testing-docker /build/presto-testing-docker
 COPY presto-memory-context /build/presto-memory-context
 COPY presto-benchmark /build/presto-benchmark
 COPY presto-example-http /build/presto-example-http
