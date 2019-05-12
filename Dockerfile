@@ -3,7 +3,7 @@ FROM fedora:28 as build
 RUN yum -y update && yum clean all
 
 RUN yum -y install \
-        java-1.8.0-openjdk maven \
+        java-11-openjdk maven \
     && yum clean all \
     && rm -rf /var/cache/yum
 
@@ -81,8 +81,8 @@ RUN mvn dependency:get -Dartifact=io.prometheus.jmx:jmx_prometheus_javaagent:0.3
 FROM centos:7
 
 RUN yum -y install --setopt=skip_missing_names_on_install=False \
-        java-1.8.0-openjdk \
-        java-1.8.0-openjdk-devel \
+        java-11-openjdk \
+        java-11-openjdk-devel \
         less \
     && yum clean all \
     && rm -rf /var/cache/yum
