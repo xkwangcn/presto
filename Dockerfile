@@ -71,8 +71,10 @@ COPY presto-password-authenticators /build/presto-password-authenticators
 COPY src /build/src
 COPY pom.xml /build/pom.xml
 
+ENV JAVA_HOME=/etc/alternatives/jre
+
 # Install presto-server
-RUN set -x && cd /build/ && mvn -B -e -DskipTests -DfailIfNoTests=false -Dtest=false --projects $(find . -maxdepth 1 -type d -name 'presto-*' | sort | grep -v rpm | sed 's|./||' | paste -sd "," -) package
+RUN set -x && cd /build/ && mvn --quiet -B -e -DskipTests -DfailIfNoTests=false -Dtest=false --projects $(find . -maxdepth 1 -type d -name 'presto-*' | sort | grep -v rpm | sed 's|./||' | paste -sd "," -) package
 # Install prometheus-jmx agent
 RUN mvn dependency:get -Dartifact=io.prometheus.jmx:jmx_prometheus_javaagent:0.3.1:jar -Ddest=/build/jmx_prometheus_javaagent.jar
 
