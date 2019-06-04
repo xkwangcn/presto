@@ -89,7 +89,7 @@ RUN yum -y install --setopt=skip_missing_names_on_install=False \
 
 RUN mkdir -p /opt/presto
 
-ENV PRESTO_VERSION 310
+ENV PRESTO_VERSION 313
 ENV PRESTO_HOME /opt/presto/presto-server
 ENV PRESTO_CLI /opt/presto/presto-cli
 ENV PROMETHEUS_JMX_EXPORTER /opt/jmx_exporter/jmx_exporter.jar
