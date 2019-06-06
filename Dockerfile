@@ -22,6 +22,7 @@ COPY presto-server-rpm /build/presto-server-rpm
 COPY presto-orc /build/presto-orc
 COPY presto-rcfile /build/presto-rcfile
 COPY presto-base-jdbc /build/presto-base-jdbc
+COPY presto-phoenix /build/presto-phoenix
 COPY presto-geospatial-toolkit /build/presto-geospatial-toolkit
 COPY presto-postgresql /build/presto-postgresql
 COPY presto-sqlserver /build/presto-sqlserver
@@ -60,6 +61,7 @@ COPY presto-parquet /build/presto-parquet
 COPY presto-proxy /build/presto-proxy
 COPY presto-hive-hadoop2 /build/presto-hive-hadoop2
 COPY presto-benchto-benchmarks /build/presto-benchto-benchmarks
+COPY presto-docker-image /build/presto-docker-image
 COPY presto-testing-docker /build/presto-testing-docker
 COPY presto-memory-context /build/presto-memory-context
 COPY presto-benchmark /build/presto-benchmark
