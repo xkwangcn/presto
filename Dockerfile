@@ -78,7 +78,7 @@ RUN cd /build/presto-server && mvn -B -e -T 1C -DskipTests -DfailIfNoTests=false
 # Install presto-cli
 RUN cd /build/presto-cli && mvn -B -e -T 1C -DskipTests -DfailIfNoTests=false -Dtest=false package
 # Install prometheus-jmx agent
-RUN mvn dependency:get -Dartifact=io.prometheus.jmx:jmx_prometheus_javaagent:0.3.1:jar -Ddest=/build/jmx_prometheus_javaagent.jar
+RUN mvn -B dependency:get -Dartifact=io.prometheus.jmx:jmx_prometheus_javaagent:0.3.1:jar -Ddest=/build/jmx_prometheus_javaagent.jar
 
 FROM centos:7
 
@@ -128,8 +128,8 @@ RUN echo 'networkaddress.cache.negative.ttl=0' >> $JAVA_HOME/lib/security/java.s
 RUN ln $PRESTO_CLI /usr/local/bin/presto-cli \
         && chmod 755 /usr/local/bin/presto-cli
 
-RUN chown -R 1003:0 /opt/presto /etc/passwd && \
-    chmod -R 774 /etc/passwd && \
+RUN chown -R 1003:0 /opt/presto /etc/passwd $JAVA_HOME/lib/security/cacerts && \
+    chmod -R 774 /etc/passwd $JAVA_HOME/lib/security/cacerts && \
     chmod -R 775 /opt/presto
 
 USER 1003
