@@ -42,6 +42,7 @@ COPY presto-record-decoder /build/presto-record-decoder
 COPY presto-tpcds /build/presto-tpcds
 COPY presto-plugin-toolkit /build/presto-plugin-toolkit
 COPY presto-spi /build/presto-spi
+COPY presto-prometheus /build/presto-prometheus
 COPY presto-thrift-testing-server /build/presto-thrift-testing-server
 COPY presto-cli /build/presto-cli
 COPY presto-hive /build/presto-hive
@@ -75,10 +76,9 @@ COPY presto-password-authenticators /build/presto-password-authenticators
 COPY src /build/src
 COPY pom.xml /build/pom.xml
 
-# Install presto-server
-RUN cd /build/presto-server && mvn -B -e -T 1C -DskipTests -DfailIfNoTests=false -Dtest=false package
-# Install presto-cli
-RUN cd /build/presto-cli && mvn -B -e -T 1C -DskipTests -DfailIfNoTests=false -Dtest=false package
+# build presto
+RUN cd /build && mvn -B -e -DskipTests -DfailIfNoTests=false -Dtest=false clean package -pl '!presto-testing-docker'
+
 # Install prometheus-jmx agent
 RUN mvn -B dependency:get -Dartifact=io.prometheus.jmx:jmx_prometheus_javaagent:0.3.1:jar -Ddest=/build/jmx_prometheus_javaagent.jar
 
@@ -104,7 +104,7 @@ RUN chmod +x /usr/bin/tini
 
 RUN mkdir -p /opt/presto
 
-ENV PRESTO_VERSION 315
+ENV PRESTO_VERSION 319-SNAPSHOT
 ENV PRESTO_HOME /opt/presto/presto-server
 ENV PRESTO_CLI /opt/presto/presto-cli
 ENV PROMETHEUS_JMX_EXPORTER /opt/jmx_exporter/jmx_exporter.jar
