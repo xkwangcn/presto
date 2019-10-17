@@ -76,7 +76,7 @@ COPY presto-password-authenticators /build/presto-password-authenticators
 COPY src /build/src
 COPY pom.xml /build/pom.xml
 
-ENV MAVEN_OPTS -Djava.net.preferIPv4Stack=true
+ENV MAVEN_OPTS="-Djava.net.preferIPv4Stack=true"
 # build presto
 RUN cd /build && mvn -B -e -T 1C -DskipTests -DfailIfNoTests=false -Dtest=false clean package -pl '!presto-testing-docker'
 # Install prometheus-jmx agent
