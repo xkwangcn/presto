@@ -73,7 +73,8 @@ public class TestHiveBucketedTables
                         "CLUSTERED BY (n_regionkey) " +
                         (sorted ? "SORTED BY (n_regionkey) " : " ") +
                         "INTO 2 BUCKETS " +
-                        "ROW FORMAT DELIMITED FIELDS TERMINATED BY '|'")
+                        "ROW FORMAT DELIMITED FIELDS TERMINATED BY '|' " +
+                        "TBLPROPERTIES ('bucketing_version'='1')")
                 .setNoData()
                 .build();
     }
@@ -98,7 +99,7 @@ public class TestHiveBucketedTables
         assertThat(query("SELECT * FROM " + tableName)).matches(PRESTO_NATION_RESULT);
     }
 
-    @Test(groups = {BIG_QUERY})
+    @Test(groups = BIG_QUERY)
     public void testIgnorePartitionBucketingIfNotBucketed()
     {
         String tableName = mutableTablesState().get(BUCKETED_PARTITIONED_NATION).getNameInDatabase();
@@ -115,7 +116,7 @@ public class TestHiveBucketedTables
                 .containsExactly(row(2));
     }
 
-    @Test(groups = {BIG_QUERY})
+    @Test(groups = BIG_QUERY)
     public void testAllowMultipleFilesPerBucket()
     {
         String tableName = mutableTablesState().get(BUCKETED_PARTITIONED_NATION).getNameInDatabase();
@@ -242,8 +243,12 @@ public class TestHiveBucketedTables
     {
         String tableName = mutableTablesState().get(BUCKETED_NATION).getNameInDatabase();
 
-        assertThat(() -> query(format("INSERT INTO %s SELECT * FROM %s", tableName, NATION.getName())))
-                .failsWithMessage("Cannot insert into bucketed unpartitioned Hive table");
+        query(format("INSERT INTO %s SELECT * FROM %s", tableName, NATION.getName()));
+        // make sure that insert will not overwrite existing data
+        query(format("INSERT INTO %s SELECT * FROM %s", tableName, NATION.getName()));
+
+        assertThat(query(format("SELECT count(*) FROM %s", tableName))).containsExactly(row(50));
+        assertThat(query(format("SELECT count(*) FROM %s WHERE n_regionkey=0", tableName))).containsExactly(row(10));
     }
 
     @Test

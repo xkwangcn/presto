@@ -115,8 +115,8 @@ public class WorkProcessorPipelineSourceOperator
                 operatorContext.getDriverContext().isCpuTimerEnabled(),
                 operatorContext.getDriverContext().isCpuTimerEnabled() && operatorContext.getDriverContext().isPerOperatorCpuTimerEnabled());
 
-        // TODO: measure and report WorkProcessorOperator memory usage
         MemoryTrackingContext sourceOperatorMemoryTrackingContext = createMemoryTrackingContext(operatorContext, 0);
+        sourceOperatorMemoryTrackingContext.initializeLocalMemoryContexts(sourceOperatorFactory.getOperatorType());
         WorkProcessor<Split> splits = WorkProcessor.create(new Splits());
 
         sourceOperator = sourceOperatorFactory.create(
@@ -124,11 +124,10 @@ public class WorkProcessorPipelineSourceOperator
                 sourceOperatorMemoryTrackingContext,
                 operatorContext.getDriverContext().getYieldSignal(),
                 splits);
-        sourceOperatorMemoryTrackingContext.initializeLocalMemoryContexts(sourceOperator.getClass().getSimpleName());
         workProcessorOperatorContexts.add(new WorkProcessorOperatorContext(
                 sourceOperator,
                 sourceOperatorFactory.getOperatorId(),
-                sourceOperatorFactory.getSourceId(),
+                sourceOperatorFactory.getPlanNodeId(),
                 sourceOperatorFactory.getOperatorType(),
                 sourceOperatorMemoryTrackingContext));
         WorkProcessor<Page> pages = sourceOperator.getOutputPages();
@@ -140,18 +139,19 @@ public class WorkProcessorPipelineSourceOperator
 
         for (int i = 0; i < operatorFactories.size(); ++i) {
             int operatorIndex = i + 1;
+            WorkProcessorOperatorFactory operatorFactory = operatorFactories.get(i);
             MemoryTrackingContext operatorMemoryTrackingContext = createMemoryTrackingContext(operatorContext, operatorIndex);
-            WorkProcessorOperator operator = operatorFactories.get(i).create(
+            operatorMemoryTrackingContext.initializeLocalMemoryContexts(operatorFactory.getOperatorType());
+            WorkProcessorOperator operator = operatorFactory.create(
                     operatorContext.getSession(),
                     operatorMemoryTrackingContext,
                     operatorContext.getDriverContext().getYieldSignal(),
                     pages);
-            operatorMemoryTrackingContext.initializeLocalMemoryContexts(operator.getClass().getSimpleName());
             workProcessorOperatorContexts.add(new WorkProcessorOperatorContext(
                     operator,
-                    operatorFactories.get(i).getOperatorId(),
-                    operatorFactories.get(i).getPlanNodeId(),
-                    operatorFactories.get(i).getOperatorType(),
+                    operatorFactory.getOperatorId(),
+                    operatorFactory.getPlanNodeId(),
+                    operatorFactory.getOperatorType(),
                     operatorMemoryTrackingContext));
             pages = operator.getOutputPages();
             pages = pages
@@ -321,8 +321,19 @@ public class WorkProcessorPipelineSourceOperator
                         succinctBytes(context.peakTotalMemoryReservation.get()),
                         new DataSize(0, BYTE),
                         operatorContext.isWaitingForMemory().isDone() ? Optional.empty() : Optional.of(WAITING_FOR_MEMORY),
-                        null))
+                        getOperatorInfo(context)))
                 .collect(toImmutableList());
+    }
+
+    @Nullable
+    private OperatorInfo getOperatorInfo(WorkProcessorOperatorContext context)
+    {
+        WorkProcessorOperator operator = context.operator;
+        if (operator != null) {
+            return operator.getOperatorInfo().orElse(null);
+        }
+
+        return context.finalOperatorInfo;
     }
 
     @Override
@@ -463,13 +474,14 @@ public class WorkProcessorPipelineSourceOperator
         try {
             for (int i = 0; i <= lastOperatorIndex; ++i) {
                 WorkProcessorOperatorContext workProcessorOperatorContext = workProcessorOperatorContexts.get(i);
-                if (workProcessorOperatorContext.operator == null) {
+                WorkProcessorOperator operator = workProcessorOperatorContext.operator;
+                if (operator == null) {
                     // operator is already closed
                     continue;
                 }
 
                 try {
-                    workProcessorOperatorContext.operator.close();
+                    operator.close();
                 }
                 catch (InterruptedException t) {
                     // don't record the stack
@@ -485,6 +497,7 @@ public class WorkProcessorPipelineSourceOperator
                 }
                 finally {
                     workProcessorOperatorContext.memoryTrackingContext.close();
+                    workProcessorOperatorContext.finalOperatorInfo = operator.getOperatorInfo().orElse(null);
                     workProcessorOperatorContext.operator = null;
                 }
             }
@@ -634,7 +647,9 @@ public class WorkProcessorPipelineSourceOperator
         final AtomicLong peakTotalMemoryReservation = new AtomicLong();
 
         @Nullable
-        WorkProcessorOperator operator;
+        volatile WorkProcessorOperator operator;
+        @Nullable
+        volatile OperatorInfo finalOperatorInfo;
 
         private WorkProcessorOperatorContext(
                 WorkProcessorOperator operator,

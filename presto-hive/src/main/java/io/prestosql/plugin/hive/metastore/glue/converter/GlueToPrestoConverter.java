@@ -27,6 +27,8 @@ import io.prestosql.plugin.hive.metastore.SortingColumn.Order;
 import io.prestosql.plugin.hive.metastore.Storage;
 import io.prestosql.plugin.hive.metastore.StorageFormat;
 import io.prestosql.plugin.hive.metastore.Table;
+import io.prestosql.plugin.hive.util.HiveBucketing;
+import io.prestosql.plugin.hive.util.HiveBucketing.BucketingVersion;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.security.PrincipalType;
 
@@ -41,6 +43,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_INVALID_METADATA;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
+import static org.apache.hadoop.hive.metastore.TableType.EXTERNAL_TABLE;
 
 public final class GlueToPrestoConverter
 {
@@ -69,7 +72,8 @@ public final class GlueToPrestoConverter
                 .setDatabaseName(dbName)
                 .setTableName(glueTable.getName())
                 .setOwner(nullToEmpty(glueTable.getOwner()))
-                .setTableType(glueTable.getTableType())
+                // Athena treats missing table type as EXTERNAL_TABLE.
+                .setTableType(firstNonNull(glueTable.getTableType(), EXTERNAL_TABLE.name()))
                 .setDataColumns(sd.getColumns().stream()
                         .map(GlueToPrestoConverter::convertColumn)
                         .collect(toList()))
@@ -108,7 +112,8 @@ public final class GlueToPrestoConverter
                                 Order.fromMetastoreApiOrder(column.getSortOrder(), "unknown")))
                         .collect(toImmutableList());
             }
-            bucketProperty = Optional.of(new HiveBucketProperty(sd.getBucketColumns(), sd.getNumberOfBuckets(), sortedBy));
+            BucketingVersion bucketingVersion = HiveBucketing.getBucketingVersion(sd.getParameters()); // TODO is it correct?
+            bucketProperty = Optional.of(new HiveBucketProperty(sd.getBucketColumns(), bucketingVersion, sd.getNumberOfBuckets(), sortedBy));
         }
 
         storageBuilder.setStorageFormat(StorageFormat.createNullable(serdeInfo.getSerializationLibrary(), sd.getInputFormat(), sd.getOutputFormat()))

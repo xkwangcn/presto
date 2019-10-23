@@ -13,22 +13,19 @@
  */
 package io.prestosql.metadata;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
-import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
 import com.google.common.collect.Ordering;
-import com.google.common.primitives.Primitives;
 import com.google.common.util.concurrent.UncheckedExecutionException;
-import io.airlift.slice.Slice;
-import io.prestosql.block.BlockSerdeUtil;
 import io.prestosql.operator.aggregation.ApproximateCountDistinctAggregation;
 import io.prestosql.operator.aggregation.ApproximateDoublePercentileAggregations;
 import io.prestosql.operator.aggregation.ApproximateDoublePercentileArrayAggregations;
@@ -72,6 +69,8 @@ import io.prestosql.operator.aggregation.VarianceAggregation;
 import io.prestosql.operator.aggregation.arrayagg.ArrayAggregationFunction;
 import io.prestosql.operator.aggregation.histogram.Histogram;
 import io.prestosql.operator.aggregation.multimapagg.MultimapAggregationFunction;
+import io.prestosql.operator.scalar.ArrayAllMatchFunction;
+import io.prestosql.operator.scalar.ArrayAnyMatchFunction;
 import io.prestosql.operator.scalar.ArrayCardinalityFunction;
 import io.prestosql.operator.scalar.ArrayCombinationsFunction;
 import io.prestosql.operator.scalar.ArrayContains;
@@ -92,6 +91,7 @@ import io.prestosql.operator.scalar.ArrayLessThanOrEqualOperator;
 import io.prestosql.operator.scalar.ArrayMaxFunction;
 import io.prestosql.operator.scalar.ArrayMinFunction;
 import io.prestosql.operator.scalar.ArrayNgramsFunction;
+import io.prestosql.operator.scalar.ArrayNoneMatchFunction;
 import io.prestosql.operator.scalar.ArrayNotEqualOperator;
 import io.prestosql.operator.scalar.ArrayPositionFunction;
 import io.prestosql.operator.scalar.ArrayRemoveFunction;
@@ -159,13 +159,8 @@ import io.prestosql.operator.window.RowNumberFunction;
 import io.prestosql.operator.window.SqlWindowFunction;
 import io.prestosql.operator.window.WindowFunctionSupplier;
 import io.prestosql.spi.PrestoException;
-import io.prestosql.spi.block.Block;
-import io.prestosql.spi.block.BlockEncodingSerde;
 import io.prestosql.spi.function.OperatorType;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
-import io.prestosql.spi.type.TypeSignature;
-import io.prestosql.spi.type.VarcharType;
 import io.prestosql.sql.DynamicFilters;
 import io.prestosql.sql.analyzer.FeaturesConfig;
 import io.prestosql.sql.analyzer.TypeSignatureProvider;
@@ -203,8 +198,6 @@ import io.prestosql.type.setdigest.SetDigestOperators;
 
 import javax.annotation.concurrent.ThreadSafe;
 
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -219,11 +212,10 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
+import static io.prestosql.metadata.FunctionId.toFunctionId;
 import static io.prestosql.metadata.FunctionKind.AGGREGATE;
 import static io.prestosql.metadata.FunctionKind.SCALAR;
-import static io.prestosql.metadata.FunctionKind.WINDOW;
-import static io.prestosql.metadata.Signature.internalOperator;
-import static io.prestosql.metadata.SignatureBinder.applyBoundVariables;
+import static io.prestosql.metadata.Signature.mangleOperatorName;
 import static io.prestosql.operator.aggregation.ArbitraryAggregationFunction.ARBITRARY_AGGREGATION;
 import static io.prestosql.operator.aggregation.ChecksumAggregationFunction.CHECKSUM_AGGREGATION;
 import static io.prestosql.operator.aggregation.CountColumn.COUNT_COLUMN;
@@ -293,7 +285,6 @@ import static io.prestosql.operator.scalar.RowLessThanOrEqualOperator.ROW_LESS_T
 import static io.prestosql.operator.scalar.RowNotEqualOperator.ROW_NOT_EQUAL;
 import static io.prestosql.operator.scalar.RowToJsonCast.ROW_TO_JSON;
 import static io.prestosql.operator.scalar.RowToRowCast.ROW_TO_ROW_CAST;
-import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static io.prestosql.operator.scalar.TryCastFunction.TRY_CAST;
 import static io.prestosql.operator.scalar.ZipFunction.ZIP_FUNCTIONS;
@@ -302,11 +293,6 @@ import static io.prestosql.operator.window.AggregateWindowFunction.supplier;
 import static io.prestosql.spi.StandardErrorCode.AMBIGUOUS_FUNCTION_CALL;
 import static io.prestosql.spi.StandardErrorCode.FUNCTION_IMPLEMENTATION_MISSING;
 import static io.prestosql.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
-import static io.prestosql.spi.type.BigintType.BIGINT;
-import static io.prestosql.spi.type.BooleanType.BOOLEAN;
-import static io.prestosql.spi.type.DoubleType.DOUBLE;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
-import static io.prestosql.spi.type.VarbinaryType.VARBINARY;
 import static io.prestosql.sql.analyzer.TypeSignatureProvider.fromTypeSignatures;
 import static io.prestosql.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static io.prestosql.type.DecimalCasts.BIGINT_TO_DECIMAL_CAST;
@@ -350,7 +336,6 @@ import static io.prestosql.type.DecimalSaturatedFloorCasts.INTEGER_TO_DECIMAL_SA
 import static io.prestosql.type.DecimalSaturatedFloorCasts.SMALLINT_TO_DECIMAL_SATURATED_FLOOR_CAST;
 import static io.prestosql.type.DecimalSaturatedFloorCasts.TINYINT_TO_DECIMAL_SATURATED_FLOOR_CAST;
 import static io.prestosql.type.DecimalToDecimalCasts.DECIMAL_TO_DECIMAL_CAST;
-import static io.prestosql.type.TypeUtils.resolveTypes;
 import static io.prestosql.type.UnknownType.UNKNOWN;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -359,29 +344,15 @@ import static java.util.concurrent.TimeUnit.HOURS;
 @ThreadSafe
 public class FunctionRegistry
 {
-    private static final String MAGIC_LITERAL_FUNCTION_PREFIX = "$literal$";
-    private static final String OPERATOR_PREFIX = "$operator$";
-
-    // hack: java classes for types that can be used with magic literals
-    private static final Set<Class<?>> SUPPORTED_LITERAL_TYPES = ImmutableSet.of(long.class, double.class, Slice.class, boolean.class);
-
     private final Metadata metadata;
-    private final LoadingCache<Signature, SpecializedFunctionKey> specializedFunctionKeyCache;
     private final LoadingCache<SpecializedFunctionKey, ScalarFunctionImplementation> specializedScalarCache;
     private final LoadingCache<SpecializedFunctionKey, InternalAggregationFunction> specializedAggregationCache;
     private final LoadingCache<SpecializedFunctionKey, WindowFunctionSupplier> specializedWindowCache;
-    private final MagicLiteralFunction magicLiteralFunction;
     private volatile FunctionMap functions = new FunctionMap();
-    private final FunctionInvokerProvider functionInvokerProvider;
 
     public FunctionRegistry(Metadata metadata, FeaturesConfig featuresConfig)
     {
         this.metadata = requireNonNull(metadata, "metadata is null");
-        this.magicLiteralFunction = new MagicLiteralFunction(metadata.getBlockEncodingSerde());
-
-        specializedFunctionKeyCache = CacheBuilder.newBuilder()
-                .maximumSize(1000)
-                .build(CacheLoader.from(this::doGetSpecializedFunctionKey));
 
         // TODO the function map should be updated, so that this cast can be removed
 
@@ -395,13 +366,13 @@ public class FunctionRegistry
                 .maximumSize(1000)
                 .expireAfterWrite(1, HOURS)
                 .build(CacheLoader.from(key -> ((SqlScalarFunction) key.getFunction())
-                        .specialize(key.getBoundVariables(), key.getArity(), metadata.getTypeManager(), this)));
+                        .specialize(key.getBoundVariables(), key.getArity(), metadata)));
 
         specializedAggregationCache = CacheBuilder.newBuilder()
                 .maximumSize(1000)
                 .expireAfterWrite(1, HOURS)
                 .build(CacheLoader.from(key -> ((SqlAggregationFunction) key.getFunction())
-                        .specialize(key.getBoundVariables(), key.getArity(), metadata.getTypeManager(), this)));
+                        .specialize(key.getBoundVariables(), key.getArity(), metadata)));
 
         specializedWindowCache = CacheBuilder.newBuilder()
                 .maximumSize(1000)
@@ -412,7 +383,7 @@ public class FunctionRegistry
                         return supplier(key.getFunction().getSignature(), specializedAggregationCache.getUnchecked(key));
                     }
                     return ((SqlWindowFunction) key.getFunction())
-                            .specialize(key.getBoundVariables(), key.getArity(), metadata.getTypeManager(), this);
+                            .specialize(key.getBoundVariables(), key.getArity(), metadata);
                 }));
 
         FunctionListBuilder builder = new FunctionListBuilder()
@@ -581,6 +552,9 @@ public class FunctionRegistry
                 .scalar(ArrayIndeterminateOperator.class)
                 .scalar(ArrayCombinationsFunction.class)
                 .scalar(ArrayNgramsFunction.class)
+                .scalar(ArrayAllMatchFunction.class)
+                .scalar(ArrayAnyMatchFunction.class)
+                .scalar(ArrayNoneMatchFunction.class)
                 .scalar(MapDistinctFromOperator.class)
                 .scalar(MapEqualOperator.class)
                 .scalar(MapEntriesFunction.class)
@@ -629,7 +603,6 @@ public class FunctionRegistry
                 .function(DECIMAL_DISTINCT_FROM_OPERATOR)
                 .function(new Histogram(featuresConfig.getHistogramGroupImplementation()))
                 .function(CHECKSUM_AGGREGATION)
-                .function(IDENTITY_CAST)
                 .function(ARBITRARY_AGGREGATION)
                 .functions(GREATEST, LEAST)
                 .functions(MAX_BY, MIN_BY, MAX_BY_N_AGGREGATION, MIN_BY_N_AGGREGATION)
@@ -647,6 +620,7 @@ public class FunctionRegistry
                 .functions(MAP_FILTER_FUNCTION, MAP_TRANSFORM_KEY_FUNCTION, MAP_TRANSFORM_VALUE_FUNCTION)
                 .function(FORMAT_FUNCTION)
                 .function(TRY_CAST)
+                .function(new LiteralFunction())
                 .aggregate(MergeSetDigestAggregation.class)
                 .aggregate(BuildSetDigestAggregation.class)
                 .scalars(SetDigestFunctions.class)
@@ -665,18 +639,12 @@ public class FunctionRegistry
         }
 
         addFunctions(builder.getFunctions());
-
-        functionInvokerProvider = new FunctionInvokerProvider(this);
-    }
-
-    public FunctionInvokerProvider getFunctionInvokerProvider()
-    {
-        return functionInvokerProvider;
     }
 
     public final synchronized void addFunctions(List<? extends SqlFunction> functions)
     {
         for (SqlFunction function : functions) {
+            checkArgument(!function.getSignature().getName().contains("|"), "Function name can not contain '|' character: %s", function.getSignature());
             for (SqlFunction existingFunction : this.functions.list()) {
                 checkArgument(!function.getSignature().equals(existingFunction.getSignature()), "Function already registered: %s", function.getSignature());
             }
@@ -694,14 +662,14 @@ public class FunctionRegistry
         return Iterables.any(functions.get(name), function -> function.getSignature().getKind() == AGGREGATE);
     }
 
-    public Signature resolveFunction(QualifiedName name, List<TypeSignatureProvider> parameterTypes)
+    ResolvedFunction resolveFunction(QualifiedName name, List<TypeSignatureProvider> parameterTypes)
     {
         Collection<SqlFunction> allCandidates = functions.get(name);
         List<SqlFunction> exactCandidates = allCandidates.stream()
                 .filter(function -> function.getSignature().getTypeVariableConstraints().isEmpty())
                 .collect(Collectors.toList());
 
-        Optional<Signature> match = matchFunctionExact(exactCandidates, parameterTypes);
+        Optional<ResolvedFunction> match = matchFunctionExact(exactCandidates, parameterTypes);
         if (match.isPresent()) {
             return match.get();
         }
@@ -734,34 +702,20 @@ public class FunctionRegistry
             message = format("Unexpected parameters (%s) for function %s. Expected: %s", parameters, name, expected);
         }
 
-        if (name.getSuffix().startsWith(MAGIC_LITERAL_FUNCTION_PREFIX)) {
-            // extract type from function name
-            String typeName = name.getSuffix().substring(MAGIC_LITERAL_FUNCTION_PREFIX.length());
-
-            // lookup the type
-            Type type = metadata.getTypeManager().getType(parseTypeSignature(typeName));
-
-            // verify we have one parameter of the proper type
-            checkArgument(parameterTypes.size() == 1, "Expected one argument to literal function, but got %s", parameterTypes);
-            Type parameterType = metadata.getTypeManager().getType(parameterTypes.get(0).getTypeSignature());
-
-            return getMagicLiteralFunctionSignature(type);
-        }
-
         throw new PrestoException(FUNCTION_NOT_FOUND, message);
     }
 
-    private Optional<Signature> matchFunctionExact(List<SqlFunction> candidates, List<TypeSignatureProvider> actualParameters)
+    private Optional<ResolvedFunction> matchFunctionExact(List<SqlFunction> candidates, List<TypeSignatureProvider> actualParameters)
     {
         return matchFunction(candidates, actualParameters, false);
     }
 
-    private Optional<Signature> matchFunctionWithCoercion(Collection<SqlFunction> candidates, List<TypeSignatureProvider> actualParameters)
+    private Optional<ResolvedFunction> matchFunctionWithCoercion(Collection<SqlFunction> candidates, List<TypeSignatureProvider> actualParameters)
     {
         return matchFunction(candidates, actualParameters, true);
     }
 
-    private Optional<Signature> matchFunction(Collection<SqlFunction> candidates, List<TypeSignatureProvider> parameters, boolean coercionAllowed)
+    private Optional<ResolvedFunction> matchFunction(Collection<SqlFunction> candidates, List<TypeSignatureProvider> parameters, boolean coercionAllowed)
     {
         List<ApplicableFunction> applicableFunctions = identifyApplicableFunctions(candidates, parameters, coercionAllowed);
         if (applicableFunctions.isEmpty()) {
@@ -774,7 +728,7 @@ public class FunctionRegistry
         }
 
         if (applicableFunctions.size() == 1) {
-            return Optional.of(getOnlyElement(applicableFunctions).getBoundSignature());
+            return Optional.of(getOnlyElement(applicableFunctions).getResolvedFunction());
         }
 
         StringBuilder errorMessageBuilder = new StringBuilder();
@@ -782,7 +736,7 @@ public class FunctionRegistry
         errorMessageBuilder.append("Candidates are:\n");
         for (ApplicableFunction function : applicableFunctions) {
             errorMessageBuilder.append("\t * ");
-            errorMessageBuilder.append(function.getBoundSignature().toString());
+            errorMessageBuilder.append(function.getBoundSignature());
             errorMessageBuilder.append("\n");
         }
         throw new PrestoException(AMBIGUOUS_FUNCTION_CALL, errorMessageBuilder.toString());
@@ -792,12 +746,9 @@ public class FunctionRegistry
     {
         ImmutableList.Builder<ApplicableFunction> applicableFunctions = ImmutableList.builder();
         for (SqlFunction function : candidates) {
-            Signature declaredSignature = function.getSignature();
-            Optional<Signature> boundSignature = new SignatureBinder(metadata.getTypeManager(), declaredSignature, allowCoercion)
-                    .bind(actualParameters);
-            if (boundSignature.isPresent()) {
-                applicableFunctions.add(new ApplicableFunction(declaredSignature, boundSignature.get()));
-            }
+            new SignatureBinder(metadata, function.getSignature(), allowCoercion)
+                    .bind(actualParameters)
+                    .ifPresent(signature -> applicableFunctions.add(new ApplicableFunction(function.getFunctionId(), function.getSignature(), signature)));
         }
         return applicableFunctions.build();
     }
@@ -885,7 +836,9 @@ public class FunctionRegistry
 
     private boolean onlyCastsUnknown(ApplicableFunction applicableFunction, List<Type> actualParameters)
     {
-        List<Type> boundTypes = resolveTypes(applicableFunction.getBoundSignature().getArgumentTypes(), metadata.getTypeManager());
+        List<Type> boundTypes = applicableFunction.getBoundSignature().getArgumentTypes().stream()
+                .map(metadata::getType)
+                .collect(toImmutableList());
         checkState(actualParameters.size() == boundTypes.size(), "type lists are of different lengths");
         for (int i = 0; i < actualParameters.size(); i++) {
             if (!boundTypes.get(i).equals(actualParameters.get(i)) && actualParameters.get(i) != UNKNOWN) {
@@ -898,7 +851,7 @@ public class FunctionRegistry
     private boolean returnTypeIsTheSame(List<ApplicableFunction> applicableFunctions)
     {
         Set<Type> returnTypes = applicableFunctions.stream()
-                .map(function -> metadata.getTypeManager().getType(function.getBoundSignature().getReturnType()))
+                .map(function -> metadata.getType(function.getBoundSignature().getReturnType()))
                 .collect(Collectors.toSet());
         return returnTypes.size() == 1;
     }
@@ -910,8 +863,8 @@ public class FunctionRegistry
 
     private boolean returnsNullOnGivenInputTypes(ApplicableFunction applicableFunction, List<Type> parameterTypes)
     {
-        Signature boundSignature = applicableFunction.getBoundSignature();
-        FunctionKind functionKind = boundSignature.getKind();
+        ResolvedFunction resolvedFunction = applicableFunction.getResolvedFunction();
+        FunctionKind functionKind = resolvedFunction.getSignature().getKind();
         // Window and Aggregation functions have fixed semantic where NULL values are always skipped
         if (functionKind != SCALAR) {
             return true;
@@ -921,7 +874,7 @@ public class FunctionRegistry
             Type parameterType = parameterTypes.get(i);
             if (parameterType.equals(UNKNOWN)) {
                 // TODO: Move information about nullable arguments to FunctionSignature. Remove this hack.
-                ScalarFunctionImplementation implementation = getScalarFunctionImplementation(boundSignature);
+                ScalarFunctionImplementation implementation = getScalarFunctionImplementation(resolvedFunction);
                 if (implementation.getArgumentProperty(i).getNullConvention() != RETURN_NULL_ON_NULL) {
                     return false;
                 }
@@ -930,13 +883,10 @@ public class FunctionRegistry
         return true;
     }
 
-    public WindowFunctionSupplier getWindowFunctionImplementation(Signature signature)
+    public WindowFunctionSupplier getWindowFunctionImplementation(ResolvedFunction resolvedFunction)
     {
-        checkArgument(signature.getKind() == WINDOW || signature.getKind() == AGGREGATE, "%s is not a window function", signature);
-        checkArgument(signature.getTypeVariableConstraints().isEmpty(), "%s has unbound type parameters", signature);
-
         try {
-            return specializedWindowCache.getUnchecked(getSpecializedFunctionKey(signature));
+            return specializedWindowCache.getUnchecked(getSpecializedFunctionKey(resolvedFunction));
         }
         catch (UncheckedExecutionException e) {
             throwIfInstanceOf(e.getCause(), PrestoException.class);
@@ -944,13 +894,10 @@ public class FunctionRegistry
         }
     }
 
-    public InternalAggregationFunction getAggregateFunctionImplementation(Signature signature)
+    public InternalAggregationFunction getAggregateFunctionImplementation(ResolvedFunction resolvedFunction)
     {
-        checkArgument(signature.getKind() == AGGREGATE, "%s is not an aggregate function", signature);
-        checkArgument(signature.getTypeVariableConstraints().isEmpty(), "%s has unbound type parameters", signature);
-
         try {
-            return specializedAggregationCache.getUnchecked(getSpecializedFunctionKey(signature));
+            return specializedAggregationCache.getUnchecked(getSpecializedFunctionKey(resolvedFunction));
         }
         catch (UncheckedExecutionException e) {
             throwIfInstanceOf(e.getCause(), PrestoException.class);
@@ -958,13 +905,10 @@ public class FunctionRegistry
         }
     }
 
-    public ScalarFunctionImplementation getScalarFunctionImplementation(Signature signature)
+    public ScalarFunctionImplementation getScalarFunctionImplementation(ResolvedFunction resolvedFunction)
     {
-        checkArgument(signature.getKind() == SCALAR, "%s is not a scalar function", signature);
-        checkArgument(signature.getTypeVariableConstraints().isEmpty(), "%s has unbound type parameters", signature);
-
         try {
-            return specializedScalarCache.getUnchecked(getSpecializedFunctionKey(signature));
+            return specializedScalarCache.getUnchecked(getSpecializedFunctionKey(resolvedFunction));
         }
         catch (UncheckedExecutionException e) {
             throwIfInstanceOf(e.getCause(), PrestoException.class);
@@ -972,97 +916,29 @@ public class FunctionRegistry
         }
     }
 
-    private SpecializedFunctionKey getSpecializedFunctionKey(Signature signature)
+    private SpecializedFunctionKey getSpecializedFunctionKey(ResolvedFunction resolvedFunction)
     {
-        try {
-            return specializedFunctionKeyCache.getUnchecked(signature);
-        }
-        catch (UncheckedExecutionException e) {
-            throwIfInstanceOf(e.getCause(), PrestoException.class);
-            throw e;
-        }
-    }
-
-    private SpecializedFunctionKey doGetSpecializedFunctionKey(Signature signature)
-    {
-        Iterable<SqlFunction> candidates = functions.get(QualifiedName.of(signature.getName()));
-        // search for exact match
-        Type returnType = metadata.getTypeManager().getType(signature.getReturnType());
-        List<TypeSignatureProvider> argumentTypeSignatureProviders = fromTypeSignatures(signature.getArgumentTypes());
-        for (SqlFunction candidate : candidates) {
-            Optional<BoundVariables> boundVariables = new SignatureBinder(metadata.getTypeManager(), candidate.getSignature(), false)
-                    .bindVariables(argumentTypeSignatureProviders, returnType);
-            if (boundVariables.isPresent()) {
-                return new SpecializedFunctionKey(candidate, boundVariables.get(), argumentTypeSignatureProviders.size());
-            }
-        }
-
-        // TODO: hack because there could be "type only" coercions (which aren't necessarily included as implicit casts),
-        // so do a second pass allowing "type only" coercions
-        List<Type> argumentTypes = resolveTypes(signature.getArgumentTypes(), metadata.getTypeManager());
-        for (SqlFunction candidate : candidates) {
-            SignatureBinder binder = new SignatureBinder(metadata.getTypeManager(), candidate.getSignature(), true);
-            Optional<BoundVariables> boundVariables = binder.bindVariables(argumentTypeSignatureProviders, returnType);
-            if (!boundVariables.isPresent()) {
-                continue;
-            }
-            Signature boundSignature = applyBoundVariables(candidate.getSignature(), boundVariables.get(), argumentTypes.size());
-
-            if (!metadata.getTypeManager().isTypeOnlyCoercion(metadata.getTypeManager().getType(boundSignature.getReturnType()), returnType)) {
-                continue;
-            }
-            boolean nonTypeOnlyCoercion = false;
-            for (int i = 0; i < argumentTypes.size(); i++) {
-                Type expectedType = metadata.getTypeManager().getType(boundSignature.getArgumentTypes().get(i));
-                if (!metadata.getTypeManager().isTypeOnlyCoercion(argumentTypes.get(i), expectedType)) {
-                    nonTypeOnlyCoercion = true;
-                    break;
-                }
-            }
-            if (nonTypeOnlyCoercion) {
-                continue;
-            }
-
-            return new SpecializedFunctionKey(candidate, boundVariables.get(), argumentTypes.size());
-        }
-
-        // TODO: this is a hack and should be removed
-        if (signature.getName().startsWith(MAGIC_LITERAL_FUNCTION_PREFIX)) {
-            List<TypeSignature> parameterTypes = signature.getArgumentTypes();
-            // extract type from function name
-            String typeName = signature.getName().substring(MAGIC_LITERAL_FUNCTION_PREFIX.length());
-
-            // lookup the type
-            Type type = metadata.getTypeManager().getType(parseTypeSignature(typeName));
-
-            // verify we have one parameter of the proper type
-            checkArgument(parameterTypes.size() == 1, "Expected one argument to literal function, but got %s", parameterTypes);
-            Type parameterType = metadata.getTypeManager().getType(parameterTypes.get(0));
-            requireNonNull(parameterType, format("Type %s not found", parameterTypes.get(0)));
-
-            return new SpecializedFunctionKey(
-                    magicLiteralFunction,
-                    BoundVariables.builder()
-                            .setTypeVariable("T", parameterType)
-                            .setTypeVariable("R", type)
-                            .build(),
-                    1);
-        }
-
-        throw new PrestoException(FUNCTION_IMPLEMENTATION_MISSING, format("%s not found", signature));
+        SqlFunction function = functions.get(resolvedFunction.getFunctionId());
+        Signature signature = resolvedFunction.getSignature();
+        BoundVariables boundVariables = new SignatureBinder(metadata, function.getSignature(), false)
+                .bindVariables(fromTypeSignatures(signature.getArgumentTypes()), signature.getReturnType())
+                .orElseThrow(() -> new IllegalArgumentException("Could not extract bound variables"));
+        return new SpecializedFunctionKey(
+                function,
+                boundVariables,
+                signature.getArgumentTypes().size());
     }
 
     public boolean canResolveOperator(OperatorType operatorType, Type returnType, List<? extends Type> argumentTypes)
     {
-        Signature signature = internalOperator(operatorType, returnType, argumentTypes);
-        return isRegistered(signature);
-    }
-
-    public boolean isRegistered(Signature signature)
-    {
         try {
+            Signature signature = new Signature(
+                    mangleOperatorName(operatorType),
+                    SCALAR,
+                    returnType.getTypeSignature(),
+                    argumentTypes.stream().map(Type::getTypeSignature).collect(toImmutableList()));
             // TODO: this is hacky, but until the magic literal and row field reference hacks are cleaned up it's difficult to implement this.
-            getScalarFunctionImplementation(signature);
+            getScalarFunctionImplementation(new ResolvedFunction(signature, toFunctionId(signature)));
             return true;
         }
         catch (PrestoException e) {
@@ -1073,7 +949,7 @@ public class FunctionRegistry
         }
     }
 
-    public Signature resolveOperator(OperatorType operatorType, List<? extends Type> argumentTypes)
+    public ResolvedFunction resolveOperator(OperatorType operatorType, List<? extends Type> argumentTypes)
             throws OperatorNotFoundException
     {
         try {
@@ -1093,81 +969,74 @@ public class FunctionRegistry
         }
     }
 
-    public Signature getCoercion(Type fromType, Type toType)
+    public ResolvedFunction getCoercion(OperatorType operatorType, Type fromType, Type toType)
     {
-        return getCoercion(fromType.getTypeSignature(), toType.getTypeSignature());
-    }
-
-    public Signature getCoercion(TypeSignature fromType, TypeSignature toType)
-    {
-        Signature signature = internalOperator(OperatorType.CAST.name(), toType, ImmutableList.of(fromType));
+        checkArgument(operatorType == OperatorType.CAST || operatorType == OperatorType.SATURATED_FLOOR_CAST);
         try {
-            getScalarFunctionImplementation(signature);
+            Signature signature = new Signature(mangleOperatorName(operatorType), SCALAR, toType.getTypeSignature(), ImmutableList.of(fromType.getTypeSignature()));
+            ResolvedFunction resolvedFunction = resolveCoercion(signature);
+            getScalarFunctionImplementation(resolvedFunction);
+            return resolvedFunction;
         }
         catch (PrestoException e) {
             if (e.getErrorCode().getCode() == FUNCTION_IMPLEMENTATION_MISSING.toErrorCode().getCode()) {
-                throw new OperatorNotFoundException(OperatorType.CAST, ImmutableList.of(fromType), toType);
+                throw new OperatorNotFoundException(operatorType, ImmutableList.of(fromType.getTypeSignature()), toType.getTypeSignature());
             }
             throw e;
         }
-        return signature;
     }
 
-    public static Type typeForMagicLiteral(Type type)
+    public ResolvedFunction getCoercion(QualifiedName name, Type fromType, Type toType)
     {
-        Class<?> clazz = type.getJavaType();
-        clazz = Primitives.unwrap(clazz);
+        ResolvedFunction resolvedFunction = resolveCoercion(new Signature(name.getSuffix(), SCALAR, toType.getTypeSignature(), ImmutableList.of(fromType.getTypeSignature())));
+        getScalarFunctionImplementation(resolvedFunction);
+        return resolvedFunction;
+    }
 
-        if (clazz == long.class) {
-            return BIGINT;
-        }
-        if (clazz == double.class) {
-            return DOUBLE;
-        }
-        if (!clazz.isPrimitive()) {
-            if (type instanceof VarcharType) {
-                return type;
+    private ResolvedFunction resolveCoercion(Signature signature)
+    {
+        Collection<SqlFunction> allCandidates = functions.get(QualifiedName.of(signature.getName()));
+
+        List<TypeSignatureProvider> argumentTypeSignatureProviders = fromTypeSignatures(signature.getArgumentTypes());
+
+        List<SqlFunction> exactCandidates = allCandidates.stream()
+                .filter(function -> possibleExactCastMatch(signature, function.getSignature()))
+                .collect(Collectors.toList());
+        for (SqlFunction candidate : exactCandidates) {
+            Optional<BoundVariables> boundVariables = new SignatureBinder(metadata, candidate.getSignature(), false)
+                    .bindVariables(argumentTypeSignatureProviders, signature.getReturnType());
+            if (boundVariables.isPresent()) {
+                return new ResolvedFunction(signature, candidate.getFunctionId());
             }
-            else {
-                return VARBINARY;
+        }
+
+        // only consider generic genericCandidates
+        List<SqlFunction> genericCandidates = allCandidates.stream()
+                .filter(function -> !function.getSignature().getTypeVariableConstraints().isEmpty())
+                .collect(Collectors.toList());
+        for (SqlFunction candidate : genericCandidates) {
+            Optional<BoundVariables> boundVariables = new SignatureBinder(metadata, candidate.getSignature(), false)
+                    .bindVariables(argumentTypeSignatureProviders, signature.getReturnType());
+            if (boundVariables.isPresent()) {
+                return new ResolvedFunction(signature, candidate.getFunctionId());
             }
         }
-        if (clazz == boolean.class) {
-            return BOOLEAN;
+
+        throw new PrestoException(FUNCTION_IMPLEMENTATION_MISSING, format("%s not found", signature));
+    }
+
+    private static boolean possibleExactCastMatch(Signature signature, Signature declaredSignature)
+    {
+        if (!declaredSignature.getTypeVariableConstraints().isEmpty()) {
+            return false;
         }
-        throw new IllegalArgumentException("Unhandled Java type: " + clazz.getName());
-    }
-
-    public static Signature getMagicLiteralFunctionSignature(Type type)
-    {
-        TypeSignature argumentType = typeForMagicLiteral(type).getTypeSignature();
-
-        return new Signature(MAGIC_LITERAL_FUNCTION_PREFIX + type.getTypeSignature(),
-                SCALAR,
-                type.getTypeSignature(),
-                argumentType);
-    }
-
-    public static boolean isSupportedLiteralType(Type type)
-    {
-        return SUPPORTED_LITERAL_TYPES.contains(type.getJavaType());
-    }
-
-    public static String mangleOperatorName(OperatorType operatorType)
-    {
-        return mangleOperatorName(operatorType.name());
-    }
-
-    public static String mangleOperatorName(String operatorName)
-    {
-        return OPERATOR_PREFIX + operatorName;
-    }
-
-    @VisibleForTesting
-    public static OperatorType unmangleOperator(String mangledName)
-    {
-        checkArgument(mangledName.startsWith(OPERATOR_PREFIX), "%s is not a mangled operator name", mangledName);
-        return OperatorType.valueOf(mangledName.substring(OPERATOR_PREFIX.length()));
+        if (!declaredSignature.getReturnType().getBase().equalsIgnoreCase(signature.getReturnType().getBase())) {
+            return false;
+        }
+        if (!declaredSignature.getArgumentTypes().get(0).getBase().equalsIgnoreCase(signature.getArgumentTypes().get(0).getBase())) {
+            return false;
+        }
+        return true;
     }
 
     private Optional<List<Type>> toTypes(List<TypeSignatureProvider> typeSignatureProviders)
@@ -1177,7 +1046,7 @@ public class FunctionRegistry
             if (typeSignatureProvider.hasDependency()) {
                 return Optional.empty();
             }
-            resultBuilder.add(metadata.getTypeManager().getType(typeSignatureProvider.getTypeSignature()));
+            resultBuilder.add(metadata.getType(typeSignatureProvider.getTypeSignature()));
         }
         return Optional.of(resultBuilder.build());
     }
@@ -1188,29 +1057,35 @@ public class FunctionRegistry
     private boolean isMoreSpecificThan(ApplicableFunction left, ApplicableFunction right)
     {
         List<TypeSignatureProvider> resolvedTypes = fromTypeSignatures(left.getBoundSignature().getArgumentTypes());
-        Optional<BoundVariables> boundVariables = new SignatureBinder(metadata.getTypeManager(), right.getDeclaredSignature(), true)
+        Optional<BoundVariables> boundVariables = new SignatureBinder(metadata, right.getDeclaredSignature(), true)
                 .bindVariables(resolvedTypes);
         return boundVariables.isPresent();
     }
 
     private static class FunctionMap
     {
-        private final Multimap<QualifiedName, SqlFunction> functions;
+        private final Map<FunctionId, SqlFunction> functions;
+        private final Multimap<QualifiedName, SqlFunction> functionsByName;
 
         public FunctionMap()
         {
-            functions = ImmutableListMultimap.of();
+            functions = ImmutableMap.of();
+            functionsByName = ImmutableListMultimap.of();
         }
 
         public FunctionMap(FunctionMap map, Iterable<? extends SqlFunction> functions)
         {
-            this.functions = ImmutableListMultimap.<QualifiedName, SqlFunction>builder()
+            this.functions = ImmutableMap.<FunctionId, SqlFunction>builder()
                     .putAll(map.functions)
+                    .putAll(Maps.uniqueIndex(functions, SqlFunction::getFunctionId))
+                    .build();
+            this.functionsByName = ImmutableListMultimap.<QualifiedName, SqlFunction>builder()
+                    .putAll(map.functionsByName)
                     .putAll(Multimaps.index(functions, function -> QualifiedName.of(function.getSignature().getName())))
                     .build();
 
             // Make sure all functions with the same name are aggregations or none of them are
-            for (Map.Entry<QualifiedName, Collection<SqlFunction>> entry : this.functions.asMap().entrySet()) {
+            for (Map.Entry<QualifiedName, Collection<SqlFunction>> entry : this.functionsByName.asMap().entrySet()) {
                 Collection<SqlFunction> values = entry.getValue();
                 long aggregations = values.stream()
                         .map(function -> function.getSignature().getKind())
@@ -1222,22 +1097,31 @@ public class FunctionRegistry
 
         public List<SqlFunction> list()
         {
-            return ImmutableList.copyOf(functions.values());
+            return ImmutableList.copyOf(functionsByName.values());
         }
 
         public Collection<SqlFunction> get(QualifiedName name)
         {
-            return functions.get(name);
+            return functionsByName.get(name);
+        }
+
+        public SqlFunction get(FunctionId functionId)
+        {
+            SqlFunction sqlFunction = functions.get(functionId);
+            checkArgument(sqlFunction != null, "Unknown function implementation: " + functionId);
+            return sqlFunction;
         }
     }
 
     private static class ApplicableFunction
     {
+        private final FunctionId functionId;
         private final Signature declaredSignature;
         private final Signature boundSignature;
 
-        private ApplicableFunction(Signature declaredSignature, Signature boundSignature)
+        private ApplicableFunction(FunctionId functionId, Signature declaredSignature, Signature boundSignature)
         {
+            this.functionId = functionId;
             this.declaredSignature = declaredSignature;
             this.boundSignature = boundSignature;
         }
@@ -1252,6 +1136,11 @@ public class FunctionRegistry
             return boundSignature;
         }
 
+        public ResolvedFunction getResolvedFunction()
+        {
+            return new ResolvedFunction(boundSignature, functionId);
+        }
+
         @Override
         public String toString()
         {
@@ -1259,66 +1148,6 @@ public class FunctionRegistry
                     .add("declaredSignature", declaredSignature)
                     .add("boundSignature", boundSignature)
                     .toString();
-        }
-    }
-
-    private static class MagicLiteralFunction
-            extends SqlScalarFunction
-    {
-        private final BlockEncodingSerde blockEncodingSerde;
-
-        public MagicLiteralFunction(BlockEncodingSerde blockEncodingSerde)
-        {
-            super(new Signature(MAGIC_LITERAL_FUNCTION_PREFIX, FunctionKind.SCALAR, TypeSignature.parseTypeSignature("R"), TypeSignature.parseTypeSignature("T")));
-            this.blockEncodingSerde = requireNonNull(blockEncodingSerde, "blockEncodingSerde is null");
-        }
-
-        @Override
-        public boolean isHidden()
-        {
-            return true;
-        }
-
-        @Override
-        public boolean isDeterministic()
-        {
-            return true;
-        }
-
-        @Override
-        public String getDescription()
-        {
-            return "magic literal";
-        }
-
-        @Override
-        public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
-        {
-            Type parameterType = boundVariables.getTypeVariable("T");
-            Type type = boundVariables.getTypeVariable("R");
-
-            MethodHandle methodHandle = null;
-            if (parameterType.getJavaType() == type.getJavaType()) {
-                methodHandle = MethodHandles.identity(parameterType.getJavaType());
-            }
-
-            if (parameterType.getJavaType() == Slice.class) {
-                if (type.getJavaType() == Block.class) {
-                    methodHandle = BlockSerdeUtil.READ_BLOCK.bindTo(blockEncodingSerde);
-                }
-            }
-
-            checkArgument(methodHandle != null,
-                    "Expected type %s to use (or can be converted into) Java type %s, but Java type is %s",
-                    type,
-                    parameterType.getJavaType(),
-                    type.getJavaType());
-
-            return new ScalarFunctionImplementation(
-                    false,
-                    ImmutableList.of(valueTypeArgumentProperty(RETURN_NULL_ON_NULL)),
-                    methodHandle,
-                    isDeterministic());
         }
     }
 }

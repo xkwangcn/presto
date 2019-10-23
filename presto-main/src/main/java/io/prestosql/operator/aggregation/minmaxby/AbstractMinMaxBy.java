@@ -24,7 +24,7 @@ import io.airlift.bytecode.Parameter;
 import io.airlift.bytecode.control.IfStatement;
 import io.airlift.bytecode.expression.BytecodeExpression;
 import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.SqlAggregationFunction;
 import io.prestosql.operator.aggregation.AccumulatorCompiler;
 import io.prestosql.operator.aggregation.AggregationMetadata;
@@ -39,13 +39,14 @@ import io.prestosql.spi.function.AccumulatorStateSerializer;
 import io.prestosql.spi.function.OperatorType;
 import io.prestosql.spi.type.ArrayType;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.sql.gen.CallSiteBinder;
 import io.prestosql.sql.gen.SqlTypeBytecodeExpression;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.bytecode.Access.FINAL;
@@ -71,7 +72,6 @@ import static io.prestosql.operator.aggregation.minmaxby.TwoNullableValueStateMa
 import static io.prestosql.operator.aggregation.minmaxby.TwoNullableValueStateMapping.getStateSerializer;
 import static io.prestosql.spi.function.OperatorType.GREATER_THAN;
 import static io.prestosql.spi.function.OperatorType.LESS_THAN;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
 import static io.prestosql.sql.gen.BytecodeUtils.loadConstant;
 import static io.prestosql.sql.gen.SqlTypeBytecodeExpression.constantType;
 import static io.prestosql.util.CompilerUtils.defineClass;
@@ -88,20 +88,20 @@ public abstract class AbstractMinMaxBy
         super((min ? "min" : "max") + "_by",
                 ImmutableList.of(orderableTypeParameter("K"), typeVariable("V")),
                 ImmutableList.of(),
-                parseTypeSignature("V"),
-                ImmutableList.of(parseTypeSignature("V"), parseTypeSignature("K")));
+                new TypeSignature("V"),
+                ImmutableList.of(new TypeSignature("V"), new TypeSignature("K")));
         this.min = min;
     }
 
     @Override
-    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type keyType = boundVariables.getTypeVariable("K");
         Type valueType = boundVariables.getTypeVariable("V");
-        return generateAggregation(valueType, keyType, functionRegistry);
+        return generateAggregation(valueType, keyType, metadata);
     }
 
-    private InternalAggregationFunction generateAggregation(Type valueType, Type keyType, FunctionRegistry functionRegistry)
+    private InternalAggregationFunction generateAggregation(Type valueType, Type keyType, Metadata metadata)
     {
         Class<?> stateClazz = getStateClass(keyType.getJavaType(), valueType.getJavaType());
         DynamicClassLoader classLoader = new DynamicClassLoader(getClass().getClassLoader());
@@ -135,7 +135,7 @@ public abstract class AbstractMinMaxBy
 
         CallSiteBinder binder = new CallSiteBinder();
         OperatorType operator = min ? LESS_THAN : GREATER_THAN;
-        MethodHandle compareMethod = functionRegistry.getScalarFunctionImplementation(functionRegistry.resolveOperator(operator, ImmutableList.of(keyType, keyType))).getMethodHandle();
+        MethodHandle compareMethod = metadata.getScalarFunctionImplementation(metadata.resolveOperator(operator, ImmutableList.of(keyType, keyType))).getMethodHandle();
 
         ClassDefinition definition = new ClassDefinition(
                 a(PUBLIC, FINAL),
@@ -149,10 +149,11 @@ public abstract class AbstractMinMaxBy
         MethodHandle inputMethod = methodHandle(generatedClass, "input", stateClazz, Block.class, Block.class, int.class);
         MethodHandle combineMethod = methodHandle(generatedClass, "combine", stateClazz, stateClazz);
         MethodHandle outputMethod = methodHandle(generatedClass, "output", stateClazz, BlockBuilder.class);
-        AggregationMetadata metadata = new AggregationMetadata(
+        AggregationMetadata aggregationMetadata = new AggregationMetadata(
                 generateAggregationName(getSignature().getName(), valueType.getTypeSignature(), inputTypes.stream().map(Type::getTypeSignature).collect(toImmutableList())),
                 createInputParameterMetadata(valueType, keyType),
                 inputMethod,
+                Optional.empty(),
                 combineMethod,
                 outputMethod,
                 ImmutableList.of(new AccumulatorStateDescriptor(
@@ -160,7 +161,7 @@ public abstract class AbstractMinMaxBy
                         stateSerializer,
                         stateFactory)),
                 valueType);
-        GenericAccumulatorFactoryBinder factory = AccumulatorCompiler.generateAccumulatorFactoryBinder(metadata, classLoader);
+        GenericAccumulatorFactoryBinder factory = AccumulatorCompiler.generateAccumulatorFactoryBinder(aggregationMetadata, classLoader);
         return new InternalAggregationFunction(getSignature().getName(), inputTypes, ImmutableList.of(intermediateType), valueType, true, false, factory);
     }
 

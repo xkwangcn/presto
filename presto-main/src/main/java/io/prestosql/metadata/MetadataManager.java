@@ -23,6 +23,9 @@ import com.google.common.collect.Multimap;
 import io.airlift.slice.Slice;
 import io.prestosql.Session;
 import io.prestosql.connector.CatalogName;
+import io.prestosql.operator.aggregation.InternalAggregationFunction;
+import io.prestosql.operator.scalar.ScalarFunctionImplementation;
+import io.prestosql.operator.window.WindowFunctionSupplier;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.QueryId;
 import io.prestosql.spi.block.ArrayBlockEncoding;
@@ -63,10 +66,12 @@ import io.prestosql.spi.connector.ConnectorViewDefinition;
 import io.prestosql.spi.connector.Constraint;
 import io.prestosql.spi.connector.ConstraintApplicationResult;
 import io.prestosql.spi.connector.LimitApplicationResult;
+import io.prestosql.spi.connector.ProjectionApplicationResult;
 import io.prestosql.spi.connector.SampleType;
 import io.prestosql.spi.connector.SchemaTableName;
 import io.prestosql.spi.connector.SchemaTablePrefix;
 import io.prestosql.spi.connector.SystemTable;
+import io.prestosql.spi.expression.ConnectorExpression;
 import io.prestosql.spi.function.OperatorType;
 import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.security.GrantInfo;
@@ -76,15 +81,17 @@ import io.prestosql.spi.security.RoleGrant;
 import io.prestosql.spi.statistics.ComputedStatistics;
 import io.prestosql.spi.statistics.TableStatistics;
 import io.prestosql.spi.statistics.TableStatisticsMetadata;
+import io.prestosql.spi.type.ParametricType;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeId;
 import io.prestosql.spi.type.TypeNotFoundException;
 import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.sql.analyzer.FeaturesConfig;
+import io.prestosql.sql.analyzer.TypeSignatureProvider;
 import io.prestosql.sql.planner.PartitioningHandle;
 import io.prestosql.sql.tree.QualifiedName;
 import io.prestosql.transaction.TransactionManager;
-import io.prestosql.type.TypeRegistry;
+import io.prestosql.type.InternalTypeManager;
 
 import javax.inject.Inject;
 
@@ -133,20 +140,19 @@ public final class MetadataManager
 {
     private final FunctionRegistry functions;
     private final ProcedureRegistry procedures;
-    private final TypeManager typeManager;
     private final SessionPropertyManager sessionPropertyManager;
     private final SchemaPropertyManager schemaPropertyManager;
     private final TablePropertyManager tablePropertyManager;
     private final ColumnPropertyManager columnPropertyManager;
     private final AnalyzePropertyManager analyzePropertyManager;
     private final TransactionManager transactionManager;
+    private final TypeRegistry typeRegistry = new TypeRegistry(ImmutableSet.of());
 
     private final ConcurrentMap<String, BlockEncoding> blockEncodings = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Collection<ConnectorMetadata>> catalogsByQueryId = new ConcurrentHashMap<>();
 
     @Inject
     public MetadataManager(FeaturesConfig featuresConfig,
-            TypeManager typeManager,
             SessionPropertyManager sessionPropertyManager,
             SchemaPropertyManager schemaPropertyManager,
             TablePropertyManager tablePropertyManager,
@@ -155,12 +161,8 @@ public final class MetadataManager
             TransactionManager transactionManager)
     {
         functions = new FunctionRegistry(this, featuresConfig);
-        if (typeManager instanceof TypeRegistry) {
-            ((TypeRegistry) typeManager).setFunctionRegistry(functions);
-        }
 
-        procedures = new ProcedureRegistry(typeManager);
-        this.typeManager = requireNonNull(typeManager, "types is null");
+        this.procedures = new ProcedureRegistry(this);
         this.sessionPropertyManager = requireNonNull(sessionPropertyManager, "sessionPropertyManager is null");
         this.schemaPropertyManager = requireNonNull(schemaPropertyManager, "schemaPropertyManager is null");
         this.tablePropertyManager = requireNonNull(tablePropertyManager, "tablePropertyManager is null");
@@ -177,8 +179,8 @@ public final class MetadataManager
         addBlockEncoding(new Int128ArrayBlockEncoding());
         addBlockEncoding(new DictionaryBlockEncoding());
         addBlockEncoding(new ArrayBlockEncoding());
-        addBlockEncoding(new MapBlockEncoding(typeManager));
-        addBlockEncoding(new SingleMapBlockEncoding(typeManager));
+        addBlockEncoding(new MapBlockEncoding(new InternalTypeManager(this)));
+        addBlockEncoding(new SingleMapBlockEncoding(new InternalTypeManager(this)));
         addBlockEncoding(new RowBlockEncoding());
         addBlockEncoding(new SingleRowBlockEncoding());
         addBlockEncoding(new RunLengthBlockEncoding());
@@ -211,7 +213,6 @@ public final class MetadataManager
     {
         return new MetadataManager(
                 featuresConfig,
-                new TypeRegistry(ImmutableSet.of(), featuresConfig),
                 new SessionPropertyManager(),
                 new SchemaPropertyManager(),
                 new TablePropertyManager(),
@@ -493,6 +494,13 @@ public final class MetadataManager
     {
         requireNonNull(prefix, "prefix is null");
 
+        Optional<QualifiedObjectName> objectName = prefix.asQualifiedObjectName();
+        if (objectName.isPresent()) {
+            return getTableHandle(session, objectName.get())
+                    .map(handle -> ImmutableList.of(objectName.get()))
+                    .orElseGet(ImmutableList::of);
+        }
+
         Optional<CatalogMetadata> catalog = getOptionalCatalogMetadata(session, prefix.getCatalogName());
         Set<QualifiedObjectName> tables = new LinkedHashSet<>();
         if (catalog.isPresent()) {
@@ -704,12 +712,12 @@ public final class MetadataManager
     }
 
     @Override
-    public void beginQuery(Session session, Set<CatalogName> connectors)
+    public void beginQuery(Session session, Multimap<CatalogName, ConnectorTableHandle> tableHandles)
     {
-        for (CatalogName catalogName : connectors) {
-            ConnectorMetadata metadata = getMetadata(session, catalogName);
-            ConnectorSession connectorSession = session.toConnectorSession(catalogName);
-            metadata.beginQuery(connectorSession);
+        for (Entry<CatalogName, Collection<ConnectorTableHandle>> entry : tableHandles.asMap().entrySet()) {
+            ConnectorMetadata metadata = getMetadata(session, entry.getKey());
+            ConnectorSession connectorSession = session.toConnectorSession(entry.getKey());
+            metadata.beginQuery(connectorSession, entry.getValue());
             registerCatalogForQueryId(session.getQueryId(), metadata);
         }
     }
@@ -791,6 +799,11 @@ public final class MetadataManager
     {
         CatalogName catalogName = tableHandle.getCatalogName();
         ConnectorMetadata metadata = getMetadata(session, catalogName);
+
+        if (!metadata.usesLegacyTableLayouts()) {
+            return false;
+        }
+
         return metadata.supportsMetadataDelete(
                 session.toConnectorSession(catalogName),
                 tableHandle.getConnectorHandle(),
@@ -862,6 +875,13 @@ public final class MetadataManager
     {
         requireNonNull(prefix, "prefix is null");
 
+        Optional<QualifiedObjectName> objectName = prefix.asQualifiedObjectName();
+        if (objectName.isPresent()) {
+            return getView(session, objectName.get())
+                    .map(handle -> ImmutableList.of(objectName.get()))
+                    .orElseGet(ImmutableList::of);
+        }
+
         Optional<CatalogMetadata> catalog = getOptionalCatalogMetadata(session, prefix.getCatalogName());
 
         Set<QualifiedObjectName> views = new LinkedHashSet<>();
@@ -921,10 +941,16 @@ public final class MetadataManager
     @Override
     public Optional<ConnectorViewDefinition> getView(Session session, QualifiedObjectName viewName)
     {
-        return getOptionalCatalogMetadata(session, viewName.getCatalogName())
-                .flatMap(catalog -> catalog.getMetadata().getView(
-                        session.toConnectorSession(catalog.getCatalogName()),
-                        viewName.asSchemaTableName()));
+        Optional<CatalogMetadata> catalog = getOptionalCatalogMetadata(session, viewName.getCatalogName());
+        if (catalog.isPresent()) {
+            CatalogMetadata catalogMetadata = catalog.get();
+            CatalogName catalogName = catalogMetadata.getConnectorId(session, viewName);
+            ConnectorMetadata metadata = catalogMetadata.getMetadataFor(catalogName);
+
+            ConnectorSession connectorSession = session.toConnectorSession(catalogName);
+            return metadata.getView(connectorSession, viewName.asSchemaTableName());
+        }
+        return Optional.empty();
     }
 
     @Override
@@ -1016,6 +1042,23 @@ public final class MetadataManager
                 .map(result -> new ConstraintApplicationResult<>(
                         new TableHandle(catalogName, result.getHandle(), table.getTransaction(), Optional.empty()),
                         result.getRemainingFilter()));
+    }
+
+    public Optional<ProjectionApplicationResult<TableHandle>> applyProjection(Session session, TableHandle table, List<ConnectorExpression> projections, Map<String, ColumnHandle> assignments)
+    {
+        CatalogName catalogName = table.getCatalogName();
+        ConnectorMetadata metadata = getMetadata(session, catalogName);
+
+        if (metadata.usesLegacyTableLayouts()) {
+            return Optional.empty();
+        }
+
+        ConnectorSession connectorSession = session.toConnectorSession(catalogName);
+        return metadata.applyProjection(connectorSession, table.getConnectorHandle(), projections, assignments)
+                .map(result -> new ProjectionApplicationResult<>(
+                        new TableHandle(catalogName, result.getHandle(), table.getTransaction(), Optional.empty()),
+                        result.getProjections(),
+                        result.getAssignments()));
     }
 
     //
@@ -1166,21 +1209,48 @@ public final class MetadataManager
     @Override
     public Type getType(TypeSignature signature)
     {
-        return typeManager.getType(signature);
+        return typeRegistry.getType(new InternalTypeManager(this), signature);
     }
 
     @Override
-    public TypeManager getTypeManager()
+    public Type fromSqlType(String sqlType)
     {
-        // TODO: make this transactional when we allow user defined types
-        return typeManager;
+        return typeRegistry.fromSqlType(new InternalTypeManager(this), sqlType);
+    }
+
+    @Override
+    public Type getType(TypeId id)
+    {
+        return typeRegistry.getType(new InternalTypeManager(this), id);
+    }
+
+    @Override
+    public Collection<Type> getTypes()
+    {
+        return typeRegistry.getTypes();
+    }
+
+    @Override
+    public Collection<ParametricType> getParametricTypes()
+    {
+        return typeRegistry.getParametricTypes();
+    }
+
+    public void addType(Type type)
+    {
+        typeRegistry.addType(type);
+    }
+
+    public void addParametricType(ParametricType parametricType)
+    {
+        typeRegistry.addParametricType(parametricType);
     }
 
     @Override
     public void verifyComparableOrderableContract()
     {
         Multimap<Type, OperatorType> missingOperators = HashMultimap.create();
-        for (Type type : typeManager.getTypes()) {
+        for (Type type : typeRegistry.getTypes()) {
             if (type.isComparable()) {
                 if (!functions.canResolveOperator(HASH_CODE, BIGINT, ImmutableList.of(type))) {
                     missingOperators.put(type, HASH_CODE);
@@ -1220,29 +1290,69 @@ public final class MetadataManager
     @Override
     public void addFunctions(List<? extends SqlFunction> functionInfos)
     {
-        // TODO: transactional when FunctionRegistry is made transactional
         functions.addFunctions(functionInfos);
     }
 
     @Override
     public List<SqlFunction> listFunctions()
     {
-        // TODO: transactional when FunctionRegistry is made transactional
         return functions.list();
+    }
+
+    @Override
+    public FunctionInvokerProvider getFunctionInvokerProvider()
+    {
+        return new FunctionInvokerProvider(this);
+    }
+
+    @Override
+    public ResolvedFunction resolveFunction(QualifiedName name, List<TypeSignatureProvider> parameterTypes)
+    {
+        return ResolvedFunction.fromQualifiedName(name)
+                .orElseGet(() -> functions.resolveFunction(name, parameterTypes));
+    }
+
+    @Override
+    public ResolvedFunction resolveOperator(OperatorType operatorType, List<? extends Type> argumentTypes)
+            throws OperatorNotFoundException
+    {
+        return functions.resolveOperator(operatorType, argumentTypes);
+    }
+
+    @Override
+    public ResolvedFunction getCoercion(OperatorType operatorType, Type fromType, Type toType)
+    {
+        return functions.getCoercion(operatorType, fromType, toType);
+    }
+
+    @Override
+    public ResolvedFunction getCoercion(QualifiedName name, Type fromType, Type toType)
+    {
+        return functions.getCoercion(name, fromType, toType);
     }
 
     @Override
     public boolean isAggregationFunction(QualifiedName name)
     {
-        // TODO: transactional when FunctionRegistry is made transactional
         return functions.isAggregationFunction(name);
     }
 
     @Override
-    public FunctionRegistry getFunctionRegistry()
+    public WindowFunctionSupplier getWindowFunctionImplementation(ResolvedFunction resolvedFunction)
     {
-        // TODO: transactional when FunctionRegistry is made transactional
-        return functions;
+        return functions.getWindowFunctionImplementation(resolvedFunction);
+    }
+
+    @Override
+    public InternalAggregationFunction getAggregateFunctionImplementation(ResolvedFunction resolvedFunction)
+    {
+        return functions.getAggregateFunctionImplementation(resolvedFunction);
+    }
+
+    @Override
+    public ScalarFunctionImplementation getScalarFunctionImplementation(ResolvedFunction resolvedFunction)
+    {
+        return functions.getScalarFunctionImplementation(resolvedFunction);
     }
 
     @Override

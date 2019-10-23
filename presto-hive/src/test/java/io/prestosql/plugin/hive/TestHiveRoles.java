@@ -14,7 +14,6 @@
 package io.prestosql.plugin.hive;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.prestosql.Session;
 import io.prestosql.spi.security.Identity;
@@ -56,7 +55,6 @@ public class TestHiveRoles
 
     @Test
     public void testCreateRole()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         assertEquals(listRoles(), ImmutableSet.of("role1"));
@@ -65,7 +63,6 @@ public class TestHiveRoles
 
     @Test
     public void testCreateDuplicateRole()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE duplicate_role");
         assertQueryFails(createAdminSession(), "CREATE ROLE duplicate_role", ".*?Role 'duplicate_role' already exists");
@@ -73,30 +70,27 @@ public class TestHiveRoles
 
     @Test
     public void testCreateRoleWithAdminOption()
-            throws Exception
     {
         assertQueryFails(createAdminSession(), "CREATE ROLE role1 WITH ADMIN admin", ".*?Hive Connector does not support WITH ADMIN statement");
     }
 
     @Test
     public void testCreateReservedRole()
-            throws Exception
     {
         assertQueryFails(createAdminSession(), "CREATE ROLE all", "Role name cannot be one of the reserved roles: \\[all, default, none\\]");
         assertQueryFails(createAdminSession(), "CREATE ROLE default", "Role name cannot be one of the reserved roles: \\[all, default, none\\]");
         assertQueryFails(createAdminSession(), "CREATE ROLE none", "Role name cannot be one of the reserved roles: \\[all, default, none\\]");
+        assertQueryFails(createAdminSession(), "CREATE ROLE None", "Role name cannot be one of the reserved roles: \\[all, default, none\\]");
     }
 
     @Test
     public void testCreateRoleByNonAdminUser()
-            throws Exception
     {
         assertQueryFails(createUserSession("non_admin_user"), "CREATE ROLE role1", "Access Denied: Cannot create role role1");
     }
 
     @Test
     public void testDropRole()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         assertEquals(listRoles(), ImmutableSet.of("role1"));
@@ -106,42 +100,36 @@ public class TestHiveRoles
 
     @Test
     public void testDropNonExistentRole()
-            throws Exception
     {
         assertQueryFails(createAdminSession(), "DROP ROLE non_existent_role", ".*?Role 'non_existent_role' does not exist");
     }
 
     @Test
     public void testDropRoleByNonAdminUser()
-            throws Exception
     {
         assertQueryFails(createUserSession("non_admin_user"), "DROP ROLE role1", "Access Denied: Cannot drop role role1");
     }
 
     @Test
     public void testListRolesByNonAdminUser()
-            throws Exception
     {
         assertQueryFails(createUserSession("non_admin_user"), "SELECT * FROM hive.information_schema.roles", "Access Denied: Cannot select from table information_schema.roles");
     }
 
     @Test
     public void testPublicRoleIsGrantedToAnyone()
-            throws Exception
     {
         assertContains(listApplicableRoles("some_user"), applicableRoles("some_user", "USER", "public", "NO"));
     }
 
     @Test
     public void testAdminRoleIsGrantedToAdmin()
-            throws Exception
     {
         assertContains(listApplicableRoles("admin"), applicableRoles("admin", "USER", "admin", "YES"));
     }
 
     @Test
     public void testGrantRoleToUser()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("GRANT role1 TO USER user");
@@ -150,7 +138,6 @@ public class TestHiveRoles
 
     @Test
     public void testGrantRoleToRole()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("CREATE ROLE role2");
@@ -163,7 +150,6 @@ public class TestHiveRoles
 
     @Test
     public void testGrantRoleWithAdminOption()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("CREATE ROLE role2");
@@ -176,7 +162,6 @@ public class TestHiveRoles
 
     @Test
     public void testGrantRoleMultipleTimes()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("CREATE ROLE role2");
@@ -195,7 +180,6 @@ public class TestHiveRoles
 
     @Test
     public void testGrantNonExistingRole()
-            throws Exception
     {
         assertQueryFails("GRANT grant_revoke_role_existing_1 TO USER grant_revoke_existing_user_1", ".*?Role 'grant_revoke_role_existing_1' does not exist");
         executeFromAdmin("CREATE ROLE grant_revoke_role_existing_1");
@@ -204,7 +188,6 @@ public class TestHiveRoles
 
     @Test
     public void testRevokeRoleFromUser()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("GRANT role1 TO USER user");
@@ -216,7 +199,6 @@ public class TestHiveRoles
 
     @Test
     public void testRevokeRoleFromRole()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("CREATE ROLE role2");
@@ -234,7 +216,6 @@ public class TestHiveRoles
 
     @Test
     public void testDropGrantedRole()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("GRANT role1 TO USER user");
@@ -246,7 +227,6 @@ public class TestHiveRoles
 
     @Test
     public void testRevokeTransitiveRoleFromUser()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("CREATE ROLE role2");
@@ -265,7 +245,6 @@ public class TestHiveRoles
 
     @Test
     public void testRevokeTransitiveRoleFromRole()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("CREATE ROLE role2");
@@ -286,7 +265,6 @@ public class TestHiveRoles
 
     @Test
     public void testDropTransitiveRole()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("CREATE ROLE role2");
@@ -307,7 +285,6 @@ public class TestHiveRoles
 
     @Test
     public void testRevokeAdminOption()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("CREATE ROLE role2");
@@ -326,7 +303,6 @@ public class TestHiveRoles
 
     @Test
     public void testRevokeRoleMultipleTimes()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE role1");
         executeFromAdmin("CREATE ROLE role2");
@@ -353,7 +329,6 @@ public class TestHiveRoles
 
     @Test
     public void testRevokeNonExistingRole()
-            throws Exception
     {
         assertQueryFails(createAdminSession(), "REVOKE grant_revoke_role_existing_1 FROM USER grant_revoke_existing_user_1", ".*?Role 'grant_revoke_role_existing_1' does not exist");
         executeFromAdmin("CREATE ROLE grant_revoke_role_existing_1");
@@ -362,7 +337,6 @@ public class TestHiveRoles
 
     @Test
     public void testSetRole()
-            throws Exception
     {
         executeFromAdmin("CREATE ROLE set_role_1");
         executeFromAdmin("CREATE ROLE set_role_2");
@@ -373,25 +347,25 @@ public class TestHiveRoles
         executeFromAdmin("GRANT set_role_3 TO ROLE set_role_2");
 
         Session unsetRole = Session.builder(getQueryRunner().getDefaultSession())
-                .setIdentity(new Identity("set_user_1", Optional.empty()))
+                .setIdentity(Identity.ofUser("set_user_1"))
                 .build();
         Session setRoleAll = Session.builder(getQueryRunner().getDefaultSession())
-                .setIdentity(new Identity("set_user_1", Optional.empty(), ImmutableMap.of("hive", new SelectedRole(SelectedRole.Type.ALL, Optional.empty()))))
+                .setIdentity(Identity.forUser("set_user_1").withRole("hive", new SelectedRole(SelectedRole.Type.ALL, Optional.empty())).build())
                 .build();
         Session setRoleNone = Session.builder(getQueryRunner().getDefaultSession())
-                .setIdentity(new Identity("set_user_1", Optional.empty(), ImmutableMap.of("hive", new SelectedRole(SelectedRole.Type.NONE, Optional.empty()))))
+                .setIdentity(Identity.forUser("set_user_1").withRole("hive", new SelectedRole(SelectedRole.Type.NONE, Optional.empty())).build())
                 .build();
         Session setRole1 = Session.builder(getQueryRunner().getDefaultSession())
-                .setIdentity(new Identity("set_user_1", Optional.empty(), ImmutableMap.of("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("set_role_1")))))
+                .setIdentity(Identity.forUser("set_user_1").withRole("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("set_role_1"))).build())
                 .build();
         Session setRole2 = Session.builder(getQueryRunner().getDefaultSession())
-                .setIdentity(new Identity("set_user_1", Optional.empty(), ImmutableMap.of("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("set_role_2")))))
+                .setIdentity(Identity.forUser("set_user_1").withRole("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("set_role_2"))).build())
                 .build();
         Session setRole3 = Session.builder(getQueryRunner().getDefaultSession())
-                .setIdentity(new Identity("set_user_1", Optional.empty(), ImmutableMap.of("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("set_role_3")))))
+                .setIdentity(Identity.forUser("set_user_1").withRole("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("set_role_3"))).build())
                 .build();
         Session setRole4 = Session.builder(getQueryRunner().getDefaultSession())
-                .setIdentity(new Identity("set_user_1", Optional.empty(), ImmutableMap.of("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("set_role_4")))))
+                .setIdentity(Identity.forUser("set_user_1").withRole("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("set_role_4"))).build())
                 .build();
 
         MaterializedResult actual = getQueryRunner().execute(unsetRole, "SELECT * FROM hive.information_schema.applicable_roles");
@@ -509,14 +483,14 @@ public class TestHiveRoles
     private Session createAdminSession()
     {
         return Session.builder(getQueryRunner().getDefaultSession())
-                .setIdentity(new Identity("admin", Optional.empty(), ImmutableMap.of("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("admin")))))
+                .setIdentity(Identity.forUser("admin").withRole("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("admin"))).build())
                 .build();
     }
 
     private Session createUserSession(String user)
     {
         return Session.builder(getQueryRunner().getDefaultSession())
-                .setIdentity(new Identity(user, Optional.empty()))
+                .setIdentity(Identity.ofUser(user))
                 .build();
     }
 }

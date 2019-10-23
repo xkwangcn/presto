@@ -17,18 +17,18 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Primitives;
 import io.prestosql.metadata.BoundVariables;
 import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.SqlScalarFunction;
 import io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
 
 import static io.prestosql.metadata.Signature.typeVariable;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
 import static java.lang.invoke.MethodHandles.catchException;
 import static java.lang.invoke.MethodHandles.constant;
 import static java.lang.invoke.MethodHandles.dropArguments;
@@ -46,8 +46,8 @@ public class TryCastFunction
                 FunctionKind.SCALAR,
                 ImmutableList.of(typeVariable("F"), typeVariable("T")),
                 ImmutableList.of(),
-                parseTypeSignature("T"),
-                ImmutableList.of(parseTypeSignature("F")),
+                new TypeSignature("T"),
+                ImmutableList.of(new TypeSignature("F")),
                 false));
     }
 
@@ -70,7 +70,7 @@ public class TryCastFunction
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type fromType = boundVariables.getTypeVariable("F");
         Type toType = boundVariables.getTypeVariable("T");
@@ -80,8 +80,8 @@ public class TryCastFunction
         MethodHandle tryCastHandle;
 
         // the resulting method needs to return a boxed type
-        Signature signature = functionRegistry.getCoercion(fromType, toType);
-        ScalarFunctionImplementation implementation = functionRegistry.getScalarFunctionImplementation(signature);
+        ResolvedFunction resolvedFunction = metadata.getCoercion(fromType, toType);
+        ScalarFunctionImplementation implementation = metadata.getScalarFunctionImplementation(resolvedFunction);
         argumentProperties = ImmutableList.of(implementation.getArgumentProperty(0));
         MethodHandle coercion = implementation.getMethodHandle();
         coercion = coercion.asType(methodType(returnType, coercion.type()));

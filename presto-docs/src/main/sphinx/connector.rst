@@ -12,12 +12,14 @@ from different data sources.
     connector/blackhole
     connector/cassandra
     connector/elasticsearch
+    connector/googlesheets
     connector/hive
     connector/hive-gcs-tutorial
     connector/hive-security
     connector/jmx
     connector/kafka
     connector/kafka-tutorial
+    connector/kinesis
     connector/kudu
     connector/localfile
     connector/memory

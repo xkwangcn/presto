@@ -21,6 +21,7 @@ import io.prestosql.metadata.AbstractMockMetadata;
 import io.prestosql.metadata.Catalog;
 import io.prestosql.metadata.CatalogManager;
 import io.prestosql.metadata.ColumnPropertyManager;
+import io.prestosql.metadata.MetadataManager;
 import io.prestosql.metadata.QualifiedObjectName;
 import io.prestosql.metadata.TableHandle;
 import io.prestosql.metadata.TablePropertyManager;
@@ -31,15 +32,13 @@ import io.prestosql.spi.connector.ColumnMetadata;
 import io.prestosql.spi.connector.ConnectorCapabilities;
 import io.prestosql.spi.connector.ConnectorTableMetadata;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeId;
 import io.prestosql.spi.type.TypeSignature;
-import io.prestosql.sql.analyzer.SemanticException;
 import io.prestosql.sql.tree.ColumnDefinition;
 import io.prestosql.sql.tree.CreateTable;
 import io.prestosql.sql.tree.QualifiedName;
 import io.prestosql.sql.tree.TableElement;
 import io.prestosql.transaction.TransactionManager;
-import io.prestosql.type.TypeRegistry;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
@@ -50,12 +49,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import static com.google.common.collect.Sets.immutableEnumSet;
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.spi.StandardErrorCode.ALREADY_EXISTS;
+import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.prestosql.spi.connector.ConnectorCapabilities.NOT_NULL_COLUMN_CONSTRAINT;
 import static io.prestosql.spi.session.PropertyMetadata.stringProperty;
 import static io.prestosql.sql.QueryUtil.identifier;
 import static io.prestosql.testing.TestingSession.createBogusTestingCatalog;
 import static io.prestosql.testing.TestingSession.testSessionBuilder;
+import static io.prestosql.testing.assertions.PrestoExceptionAssert.assertPrestoExceptionThrownBy;
 import static io.prestosql.transaction.InMemoryTransactionManager.createTestTransactionManager;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.emptySet;
@@ -70,32 +72,26 @@ import static org.testng.Assert.fail;
 public class TestCreateTableTask
 {
     private static final String CATALOG_NAME = "catalog";
-    private CatalogManager catalogManager;
-    private TypeManager typeManager;
-    private TransactionManager transactionManager;
-    private TablePropertyManager tablePropertyManager;
-    private ColumnPropertyManager columnPropertyManager;
-    private Catalog testCatalog;
     private Session testSession;
     private MockMetadata metadata;
 
     @BeforeMethod
     public void setUp()
     {
-        catalogManager = new CatalogManager();
-        typeManager = new TypeRegistry();
-        transactionManager = createTestTransactionManager(catalogManager);
-        tablePropertyManager = new TablePropertyManager();
-        columnPropertyManager = new ColumnPropertyManager();
-        testCatalog = createBogusTestingCatalog(CATALOG_NAME);
+        CatalogManager catalogManager = new CatalogManager();
+        TransactionManager transactionManager = createTestTransactionManager(catalogManager);
+        TablePropertyManager tablePropertyManager = new TablePropertyManager();
+        ColumnPropertyManager columnPropertyManager = new ColumnPropertyManager();
+        Catalog testCatalog = createBogusTestingCatalog(CATALOG_NAME);
         catalogManager.registerCatalog(testCatalog);
-        tablePropertyManager.addProperties(testCatalog.getConnectorCatalogName(),
+        tablePropertyManager.addProperties(
+                testCatalog.getConnectorCatalogName(),
                 ImmutableList.of(stringProperty("baz", "test property", null, false)));
         columnPropertyManager.addProperties(testCatalog.getConnectorCatalogName(), ImmutableList.of());
         testSession = testSessionBuilder()
                 .setTransactionId(transactionManager.beginTransaction(false))
                 .build();
-        metadata = new MockMetadata(typeManager,
+        metadata = new MockMetadata(
                 tablePropertyManager,
                 columnPropertyManager,
                 testCatalog.getConnectorCatalogName(),
@@ -165,7 +161,7 @@ public class TestCreateTableTask
         assertFalse(columns.get(2).isNullable());
     }
 
-    @Test(expectedExceptions = SemanticException.class, expectedExceptionsMessageRegExp = ".*does not support non-null column for column name 'b'")
+    @Test
     public void testCreateWithUnsupportedConnectorThrowsWhenNotNull()
     {
         List<TableElement> inputColumns = ImmutableList.of(
@@ -179,13 +175,16 @@ public class TestCreateTableTask
                 ImmutableList.of(),
                 Optional.empty());
 
-        getFutureValue(new CreateTableTask().internalExecute(statement, metadata, new AllowAllAccessControl(), testSession, emptyList()));
+        assertPrestoExceptionThrownBy(() ->
+                getFutureValue(new CreateTableTask().internalExecute(statement, metadata, new AllowAllAccessControl(), testSession, emptyList())))
+                .hasErrorCode(NOT_SUPPORTED)
+                .hasMessage("Catalog 'catalog' does not support non-null column for column name 'b'");
     }
 
     private static class MockMetadata
             extends AbstractMockMetadata
     {
-        private final TypeManager typeManager;
+        private final MetadataManager metadata;
         private final TablePropertyManager tablePropertyManager;
         private final ColumnPropertyManager columnPropertyManager;
         private final CatalogName catalogHandle;
@@ -193,17 +192,16 @@ public class TestCreateTableTask
         private Set<ConnectorCapabilities> connectorCapabilities;
 
         public MockMetadata(
-                TypeManager typeManager,
                 TablePropertyManager tablePropertyManager,
                 ColumnPropertyManager columnPropertyManager,
                 CatalogName catalogHandle,
                 Set<ConnectorCapabilities> connectorCapabilities)
         {
-            this.typeManager = requireNonNull(typeManager, "typeManager is null");
             this.tablePropertyManager = requireNonNull(tablePropertyManager, "tablePropertyManager is null");
             this.columnPropertyManager = requireNonNull(columnPropertyManager, "columnPropertyManager is null");
             this.catalogHandle = requireNonNull(catalogHandle, "catalogHandle is null");
             this.connectorCapabilities = requireNonNull(immutableEnumSet(connectorCapabilities), "connectorCapabilities is null");
+            this.metadata = createTestMetadataManager();
         }
 
         @Override
@@ -230,7 +228,19 @@ public class TestCreateTableTask
         @Override
         public Type getType(TypeSignature signature)
         {
-            return typeManager.getType(signature);
+            return metadata.getType(signature);
+        }
+
+        @Override
+        public Type getType(TypeId id)
+        {
+            return metadata.getType(id);
+        }
+
+        @Override
+        public Type fromSqlType(String sqlType)
+        {
+            return metadata.fromSqlType(sqlType);
         }
 
         @Override

@@ -33,7 +33,6 @@ import io.prestosql.testing.TestingSession;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.Test;
 
-import java.util.Optional;
 import java.util.function.Supplier;
 
 import static com.google.common.base.Preconditions.checkState;
@@ -41,7 +40,7 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
 import static io.airlift.units.Duration.nanosSince;
 import static io.prestosql.SystemSessionProperties.QUERY_MAX_MEMORY;
-import static io.prestosql.connector.informationschema.InformationSchemaMetadata.INFORMATION_SCHEMA;
+import static io.prestosql.connector.informationschema.InformationSchemaTable.INFORMATION_SCHEMA;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
 import static io.prestosql.testing.MaterializedResult.resultBuilder;
 import static io.prestosql.testing.TestingAccessControlManager.TestingPrivilegeType.ADD_COLUMN;
@@ -949,7 +948,7 @@ public abstract class AbstractTestDistributedQueries
         skipTestUnless(supportsViews());
 
         Session viewOwnerSession = TestingSession.testSessionBuilder()
-                .setIdentity(new Identity("test_view_access_owner", Optional.empty()))
+                .setIdentity(Identity.ofUser("test_view_access_owner"))
                 .setCatalog(getSession().getCatalog().get())
                 .setSchema(getSession().getSchema().get())
                 .build();
@@ -982,7 +981,7 @@ public abstract class AbstractTestDistributedQueries
                 privilege(getSession().getUser(), "orders", SELECT_COLUMN));
 
         Session nestedViewOwnerSession = TestingSession.testSessionBuilder()
-                .setIdentity(new Identity("test_nested_view_access_owner", Optional.empty()))
+                .setIdentity(Identity.ofUser("test_nested_view_access_owner"))
                 .setCatalog(getSession().getCatalog().get())
                 .setSchema(getSession().getSchema().get())
                 .build();

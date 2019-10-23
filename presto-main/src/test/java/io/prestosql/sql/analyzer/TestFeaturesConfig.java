@@ -15,7 +15,6 @@ package io.prestosql.sql.analyzer;
 
 import com.google.common.collect.ImmutableMap;
 import io.airlift.configuration.ConfigurationFactory;
-import io.airlift.configuration.testing.ConfigAssertions;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.prestosql.operator.aggregation.arrayagg.ArrayAggGroupImplementation;
@@ -27,6 +26,7 @@ import java.util.Map;
 
 import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
 import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.KILOBYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
@@ -46,7 +46,7 @@ public class TestFeaturesConfig
     @Test
     public void testDefaults()
     {
-        assertRecordedDefaults(ConfigAssertions.recordDefaults(FeaturesConfig.class)
+        assertRecordedDefaults(recordDefaults(FeaturesConfig.class)
                 .setCpuCostWeight(75)
                 .setMemoryCostWeight(10)
                 .setNetworkCostWeight(15)
@@ -107,7 +107,10 @@ public class TestFeaturesConfig
                 .setMaxGroupingSets(2048)
                 .setWorkProcessorPipelines(false)
                 .setSkipRedundantSort(true)
-                .setEnableDynamicFiltering(false));
+                .setPredicatePushdownUseTableProperties(true)
+                .setEnableDynamicFiltering(false)
+                .setDynamicFilteringMaxPerDriverRowCount(100)
+                .setDynamicFilteringMaxPerDriverSize(new DataSize(10, KILOBYTE)));
     }
 
     @Test
@@ -174,7 +177,10 @@ public class TestFeaturesConfig
                 .put("analyzer.max-grouping-sets", "2047")
                 .put("experimental.work-processor-pipelines", "true")
                 .put("optimizer.skip-redundant-sort", "false")
+                .put("optimizer.predicate-pushdown-use-table-properties", "false")
                 .put("experimental.enable-dynamic-filtering", "true")
+                .put("experimental.dynamic-filtering-max-per-driver-row-count", "256")
+                .put("experimental.dynamic-filtering-max-per-driver-size", "64kB")
                 .build();
 
         FeaturesConfig expected = new FeaturesConfig()
@@ -238,7 +244,10 @@ public class TestFeaturesConfig
                 .setDefaultFilterFactorEnabled(true)
                 .setWorkProcessorPipelines(true)
                 .setSkipRedundantSort(false)
-                .setEnableDynamicFiltering(true);
+                .setPredicatePushdownUseTableProperties(false)
+                .setEnableDynamicFiltering(true)
+                .setDynamicFilteringMaxPerDriverRowCount(256)
+                .setDynamicFilteringMaxPerDriverSize(new DataSize(64, KILOBYTE));
         assertFullMapping(properties, expected);
     }
 

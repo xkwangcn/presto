@@ -25,14 +25,13 @@ import io.airlift.bytecode.control.IfStatement;
 import io.prestosql.annotation.UsedByGeneratedCode;
 import io.prestosql.metadata.BoundVariables;
 import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.SqlScalarFunction;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.function.OperatorType;
-import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.sql.gen.CallSiteBinder;
 
 import java.lang.invoke.MethodHandle;
@@ -48,14 +47,12 @@ import static io.airlift.bytecode.Access.STATIC;
 import static io.airlift.bytecode.Access.a;
 import static io.airlift.bytecode.Parameter.arg;
 import static io.airlift.bytecode.ParameterizedType.type;
-import static io.prestosql.metadata.Signature.internalOperator;
 import static io.prestosql.metadata.Signature.orderableTypeParameter;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static io.prestosql.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
-import static io.prestosql.spi.type.BooleanType.BOOLEAN;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.DoubleType.DOUBLE;
 import static io.prestosql.sql.gen.BytecodeUtils.invoke;
 import static io.prestosql.util.CompilerUtils.defineClass;
 import static io.prestosql.util.CompilerUtils.makeClassName;
@@ -80,8 +77,8 @@ public abstract class AbstractGreatestLeast
                 FunctionKind.SCALAR,
                 ImmutableList.of(orderableTypeParameter("E")),
                 ImmutableList.of(),
-                parseTypeSignature("E"),
-                ImmutableList.of(parseTypeSignature("E")),
+                new TypeSignature("E"),
+                ImmutableList.of(new TypeSignature("E")),
                 true));
         this.operatorType = requireNonNull(operatorType, "operatorType is null");
     }
@@ -99,12 +96,12 @@ public abstract class AbstractGreatestLeast
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type type = boundVariables.getTypeVariable("E");
         checkArgument(type.isOrderable(), "Type must be orderable");
 
-        MethodHandle compareMethod = functionRegistry.getScalarFunctionImplementation(internalOperator(operatorType, BOOLEAN, ImmutableList.of(type, type))).getMethodHandle();
+        MethodHandle compareMethod = metadata.getScalarFunctionImplementation(metadata.resolveOperator(operatorType, ImmutableList.of(type, type))).getMethodHandle();
 
         List<Class<?>> javaTypes = IntStream.range(0, arity)
                 .mapToObj(i -> type.getJavaType())
@@ -157,7 +154,7 @@ public abstract class AbstractGreatestLeast
 
         CallSiteBinder binder = new CallSiteBinder();
 
-        if (type.getTypeSignature().getBase().equals(StandardTypes.DOUBLE)) {
+        if (type.equals(DOUBLE)) {
             for (Parameter parameter : parameters) {
                 body.append(parameter);
                 body.append(invoke(binder.bind(CHECK_NOT_NAN.bindTo(getSignature().getName())), "checkNotNaN"));

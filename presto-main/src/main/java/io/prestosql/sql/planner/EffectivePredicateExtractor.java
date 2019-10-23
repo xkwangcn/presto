@@ -40,6 +40,7 @@ import io.prestosql.sql.planner.plan.SpatialJoinNode;
 import io.prestosql.sql.planner.plan.TableScanNode;
 import io.prestosql.sql.planner.plan.TopNNode;
 import io.prestosql.sql.planner.plan.UnionNode;
+import io.prestosql.sql.planner.plan.UnnestNode;
 import io.prestosql.sql.planner.plan.ValuesNode;
 import io.prestosql.sql.planner.plan.WindowNode;
 import io.prestosql.sql.tree.ComparisonExpression;
@@ -58,13 +59,11 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
-import static com.google.common.base.Predicates.in;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.sql.ExpressionUtils.combineConjuncts;
 import static io.prestosql.sql.ExpressionUtils.expressionOrNullSymbols;
 import static io.prestosql.sql.ExpressionUtils.extractConjuncts;
 import static io.prestosql.sql.ExpressionUtils.filterDeterministicConjuncts;
-import static io.prestosql.sql.planner.EqualityInference.createEqualityInference;
 import static io.prestosql.sql.tree.BooleanLiteral.TRUE_LITERAL;
 import static io.prestosql.sql.tree.ComparisonExpression.Operator.EQUAL;
 import static java.util.Objects.requireNonNull;
@@ -90,16 +89,18 @@ public class EffectivePredicateExtractor
 
     private final DomainTranslator domainTranslator;
     private final Metadata metadata;
+    private final boolean useTableProperties;
 
-    public EffectivePredicateExtractor(DomainTranslator domainTranslator, Metadata metadata)
+    public EffectivePredicateExtractor(DomainTranslator domainTranslator, Metadata metadata, boolean useTableProperties)
     {
         this.domainTranslator = requireNonNull(domainTranslator, "domainTranslator is null");
         this.metadata = requireNonNull(metadata, "metadata is null");
+        this.useTableProperties = useTableProperties;
     }
 
     public Expression extract(Session session, PlanNode node, TypeProvider types, TypeAnalyzer typeAnalyzer)
     {
-        return node.accept(new Visitor(domainTranslator, metadata, session, types, typeAnalyzer), null);
+        return node.accept(new Visitor(domainTranslator, metadata, session, types, typeAnalyzer, useTableProperties), null);
     }
 
     private static class Visitor
@@ -110,14 +111,16 @@ public class EffectivePredicateExtractor
         private final Session session;
         private final TypeProvider types;
         private final TypeAnalyzer typeAnalyzer;
+        private final boolean useTableProperties;
 
-        public Visitor(DomainTranslator domainTranslator, Metadata metadata, Session session, TypeProvider types, TypeAnalyzer typeAnalyzer)
+        public Visitor(DomainTranslator domainTranslator, Metadata metadata, Session session, TypeProvider types, TypeAnalyzer typeAnalyzer, boolean useTableProperties)
         {
             this.domainTranslator = requireNonNull(domainTranslator, "domainTranslator is null");
             this.metadata = requireNonNull(metadata, "metadata is null");
             this.session = requireNonNull(session, "session is null");
             this.types = requireNonNull(types, "types is null");
             this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
+            this.useTableProperties = useTableProperties;
         }
 
         @Override
@@ -219,8 +222,13 @@ public class EffectivePredicateExtractor
         {
             Map<ColumnHandle, Symbol> assignments = ImmutableBiMap.copyOf(node.getAssignments()).inverse();
 
-            // TODO: replace with metadata.getTableProperties() when table layouts are fully removed
             TupleDomain<ColumnHandle> predicate = node.getEnforcedConstraint();
+            if (useTableProperties && !node.getEnforcedConstraint().isAll()) {
+                // extract table properties only when predicate has been pushed to table scan at least once
+                predicate = metadata.getTableProperties(session, node.getTable()).getPredicate();
+            }
+
+            // TODO: replace with metadata.getTableProperties() when table layouts are fully removed
             return domainTranslator.toPredicate(predicate.simplify().transform(assignments::get));
         }
 
@@ -240,6 +248,25 @@ public class EffectivePredicateExtractor
         public Expression visitUnion(UnionNode node, Void context)
         {
             return deriveCommonPredicates(node, source -> node.outputSymbolMap(source).entries());
+        }
+
+        @Override
+        public Expression visitUnnest(UnnestNode node, Void context)
+        {
+            Expression sourcePredicate = node.getSource().accept(this, context);
+
+            switch (node.getJoinType()) {
+                case INNER:
+                case LEFT:
+                    return pullExpressionThroughSymbols(
+                            combineConjuncts(node.getFilter().orElse(TRUE_LITERAL), sourcePredicate),
+                            node.getOutputSymbols());
+                case RIGHT:
+                case FULL:
+                    return TRUE_LITERAL;
+                default:
+                    throw new UnsupportedOperationException("Unknown UNNEST join type: " + node.getJoinType());
+            }
         }
 
         @Override
@@ -424,28 +451,22 @@ public class EffectivePredicateExtractor
             return combineConjuncts(potentialOutputConjuncts);
         }
 
-        private static List<Expression> pullExpressionsThroughSymbols(List<Expression> expressions, Collection<Symbol> symbols)
-        {
-            return expressions.stream()
-                    .map(expression -> pullExpressionThroughSymbols(expression, symbols))
-                    .collect(toImmutableList());
-        }
-
         private static Expression pullExpressionThroughSymbols(Expression expression, Collection<Symbol> symbols)
         {
-            EqualityInference equalityInference = createEqualityInference(expression);
+            EqualityInference equalityInference = EqualityInference.newInstance(expression);
 
             ImmutableList.Builder<Expression> effectiveConjuncts = ImmutableList.builder();
+            Set<Symbol> scope = ImmutableSet.copyOf(symbols);
             for (Expression conjunct : EqualityInference.nonInferrableConjuncts(expression)) {
                 if (DeterminismEvaluator.isDeterministic(conjunct)) {
-                    Expression rewritten = equalityInference.rewriteExpression(conjunct, in(symbols));
+                    Expression rewritten = equalityInference.rewrite(conjunct, scope);
                     if (rewritten != null) {
                         effectiveConjuncts.add(rewritten);
                     }
                 }
             }
 
-            effectiveConjuncts.addAll(equalityInference.generateEqualitiesPartitionedBy(in(symbols)).getScopeEqualities());
+            effectiveConjuncts.addAll(equalityInference.generateEqualitiesPartitionedBy(scope).getScopeEqualities());
 
             return combineConjuncts(effectiveConjuncts.build());
         }

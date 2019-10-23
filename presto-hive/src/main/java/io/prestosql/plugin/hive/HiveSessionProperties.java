@@ -16,6 +16,10 @@ package io.prestosql.plugin.hive;
 import com.google.common.collect.ImmutableList;
 import io.airlift.units.DataSize;
 import io.prestosql.orc.OrcWriteValidation.OrcWriteValidationMode;
+import io.prestosql.plugin.hive.orc.OrcReaderConfig;
+import io.prestosql.plugin.hive.orc.OrcWriterConfig;
+import io.prestosql.plugin.hive.parquet.ParquetReaderConfig;
+import io.prestosql.plugin.hive.parquet.ParquetWriterConfig;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.session.PropertyMetadata;
@@ -31,6 +35,7 @@ import static io.prestosql.plugin.hive.HiveSessionProperties.InsertExistingParti
 import static io.prestosql.spi.StandardErrorCode.INVALID_SESSION_PROPERTY;
 import static io.prestosql.spi.session.PropertyMetadata.booleanProperty;
 import static io.prestosql.spi.session.PropertyMetadata.dataSizeProperty;
+import static io.prestosql.spi.session.PropertyMetadata.enumProperty;
 import static io.prestosql.spi.session.PropertyMetadata.integerProperty;
 import static io.prestosql.spi.session.PropertyMetadata.stringProperty;
 import static io.prestosql.spi.type.DoubleType.DOUBLE;
@@ -59,6 +64,7 @@ public final class HiveSessionProperties
     private static final String ORC_OPTIMIZED_WRITER_MAX_STRIPE_ROWS = "orc_optimized_writer_max_stripe_rows";
     private static final String ORC_OPTIMIZED_WRITER_MAX_DICTIONARY_MEMORY = "orc_optimized_writer_max_dictionary_memory";
     private static final String HIVE_STORAGE_FORMAT = "hive_storage_format";
+    private static final String COMPRESSION_CODEC = "compression_codec";
     private static final String RESPECT_TABLE_FORMAT = "respect_table_format";
     private static final String CREATE_EMPTY_BUCKET_FILES = "create_empty_bucket_files";
     private static final String PARQUET_USE_COLUMN_NAME = "parquet_use_column_names";
@@ -100,7 +106,12 @@ public final class HiveSessionProperties
     }
 
     @Inject
-    public HiveSessionProperties(HiveConfig hiveConfig, OrcFileWriterConfig orcFileWriterConfig, ParquetFileWriterConfig parquetFileWriterConfig)
+    public HiveSessionProperties(
+            HiveConfig hiveConfig,
+            OrcReaderConfig orcReaderConfig,
+            OrcWriterConfig orcWriterConfig,
+            ParquetReaderConfig parquetReaderConfig,
+            ParquetWriterConfig parquetWriterConfig)
     {
         sessionProperties = ImmutableList.of(
                 booleanProperty(
@@ -125,54 +136,54 @@ public final class HiveSessionProperties
                 booleanProperty(
                         ORC_BLOOM_FILTERS_ENABLED,
                         "ORC: Enable bloom filters for predicate pushdown",
-                        hiveConfig.isOrcBloomFiltersEnabled(),
+                        orcReaderConfig.isBloomFiltersEnabled(),
                         false),
                 dataSizeProperty(
                         ORC_MAX_MERGE_DISTANCE,
                         "ORC: Maximum size of gap between two reads to merge into a single read",
-                        hiveConfig.getOrcMaxMergeDistance(),
+                        orcReaderConfig.getMaxMergeDistance(),
                         false),
                 dataSizeProperty(
                         ORC_MAX_BUFFER_SIZE,
                         "ORC: Maximum size of a single read",
-                        hiveConfig.getOrcMaxBufferSize(),
+                        orcReaderConfig.getMaxBufferSize(),
                         false),
                 dataSizeProperty(
                         ORC_STREAM_BUFFER_SIZE,
                         "ORC: Size of buffer for streaming reads",
-                        hiveConfig.getOrcStreamBufferSize(),
+                        orcReaderConfig.getStreamBufferSize(),
                         false),
                 dataSizeProperty(
                         ORC_TINY_STRIPE_THRESHOLD,
                         "ORC: Threshold below which an ORC stripe or file will read in its entirety",
-                        hiveConfig.getOrcTinyStripeThreshold(),
+                        orcReaderConfig.getTinyStripeThreshold(),
                         false),
                 dataSizeProperty(
                         ORC_MAX_READ_BLOCK_SIZE,
                         "ORC: Soft max size of Presto blocks produced by ORC reader",
-                        hiveConfig.getOrcMaxReadBlockSize(),
+                        orcReaderConfig.getMaxBlockSize(),
                         false),
                 booleanProperty(
                         ORC_LAZY_READ_SMALL_RANGES,
                         "Experimental: ORC: Read small file segments lazily",
-                        hiveConfig.isOrcLazyReadSmallRanges(),
+                        orcReaderConfig.isLazyReadSmallRanges(),
                         false),
                 dataSizeProperty(
                         ORC_STRING_STATISTICS_LIMIT,
                         "ORC: Maximum size of string statistics; drop if exceeding",
-                        orcFileWriterConfig.getStringStatisticsLimit(),
+                        orcWriterConfig.getStringStatisticsLimit(),
                         false),
                 booleanProperty(
                         ORC_OPTIMIZED_WRITER_VALIDATE,
                         "Experimental: ORC: Force all validation for files",
-                        hiveConfig.getOrcWriterValidationPercentage() > 0.0,
+                        orcWriterConfig.getValidationPercentage() > 0.0,
                         false),
                 new PropertyMetadata<>(
                         ORC_OPTIMIZED_WRITER_VALIDATE_PERCENTAGE,
                         "Experimental: ORC: sample percentage for validation for files",
                         DOUBLE,
                         Double.class,
-                        hiveConfig.getOrcWriterValidationPercentage(),
+                        orcWriterConfig.getValidationPercentage(),
                         false,
                         value -> {
                             double doubleValue = ((Number) value).doubleValue();
@@ -184,35 +195,43 @@ public final class HiveSessionProperties
                             return doubleValue;
                         },
                         value -> value),
-                stringProperty(
+                enumProperty(
                         ORC_OPTIMIZED_WRITER_VALIDATE_MODE,
                         "Experimental: ORC: Level of detail in ORC validation",
-                        hiveConfig.getOrcWriterValidationMode().toString(),
+                        OrcWriteValidationMode.class,
+                        orcWriterConfig.getValidationMode(),
                         false),
                 dataSizeProperty(
                         ORC_OPTIMIZED_WRITER_MIN_STRIPE_SIZE,
                         "Experimental: ORC: Min stripe size",
-                        orcFileWriterConfig.getStripeMinSize(),
+                        orcWriterConfig.getStripeMinSize(),
                         false),
                 dataSizeProperty(
                         ORC_OPTIMIZED_WRITER_MAX_STRIPE_SIZE,
                         "Experimental: ORC: Max stripe size",
-                        orcFileWriterConfig.getStripeMaxSize(),
+                        orcWriterConfig.getStripeMaxSize(),
                         false),
                 integerProperty(
                         ORC_OPTIMIZED_WRITER_MAX_STRIPE_ROWS,
                         "Experimental: ORC: Max stripe row count",
-                        orcFileWriterConfig.getStripeMaxRowCount(),
+                        orcWriterConfig.getStripeMaxRowCount(),
                         false),
                 dataSizeProperty(
                         ORC_OPTIMIZED_WRITER_MAX_DICTIONARY_MEMORY,
                         "Experimental: ORC: Max dictionary memory",
-                        orcFileWriterConfig.getDictionaryMaxMemory(),
+                        orcWriterConfig.getDictionaryMaxMemory(),
                         false),
-                stringProperty(
+                enumProperty(
                         HIVE_STORAGE_FORMAT,
                         "Default storage format for new tables or partitions",
-                        hiveConfig.getHiveStorageFormat().toString(),
+                        HiveStorageFormat.class,
+                        hiveConfig.getHiveStorageFormat(),
+                        false),
+                enumProperty(
+                        COMPRESSION_CODEC,
+                        "Compression codec to use when writing files",
+                        HiveCompressionCodec.class,
+                        hiveConfig.getHiveCompressionCodec(),
                         false),
                 booleanProperty(
                         RESPECT_TABLE_FORMAT,
@@ -232,22 +251,22 @@ public final class HiveSessionProperties
                 booleanProperty(
                         PARQUET_FAIL_WITH_CORRUPTED_STATISTICS,
                         "Parquet: Fail when scanning Parquet files with corrupted statistics",
-                        hiveConfig.isFailOnCorruptedParquetStatistics(),
+                        parquetReaderConfig.isFailOnCorruptedStatistics(),
                         false),
                 dataSizeProperty(
                         PARQUET_MAX_READ_BLOCK_SIZE,
                         "Parquet: Maximum size of a block to read",
-                        hiveConfig.getParquetMaxReadBlockSize(),
+                        parquetReaderConfig.getMaxReadBlockSize(),
                         false),
                 dataSizeProperty(
                         PARQUET_WRITER_BLOCK_SIZE,
                         "Parquet: Writer block size",
-                        parquetFileWriterConfig.getBlockSize(),
+                        parquetWriterConfig.getBlockSize(),
                         false),
                 dataSizeProperty(
                         PARQUET_WRITER_PAGE_SIZE,
                         "Parquet: Writer page size",
-                        parquetFileWriterConfig.getPageSize(),
+                        parquetWriterConfig.getPageSize(),
                         false),
                 dataSizeProperty(
                         MAX_SPLIT_SIZE,
@@ -390,7 +409,7 @@ public final class HiveSessionProperties
 
     public static OrcWriteValidationMode getOrcOptimizedWriterValidateMode(ConnectorSession session)
     {
-        return OrcWriteValidationMode.valueOf(session.getProperty(ORC_OPTIMIZED_WRITER_VALIDATE_MODE, String.class).toUpperCase(ENGLISH));
+        return session.getProperty(ORC_OPTIMIZED_WRITER_VALIDATE_MODE, OrcWriteValidationMode.class);
     }
 
     public static DataSize getOrcOptimizedWriterMinStripeSize(ConnectorSession session)
@@ -415,7 +434,12 @@ public final class HiveSessionProperties
 
     public static HiveStorageFormat getHiveStorageFormat(ConnectorSession session)
     {
-        return HiveStorageFormat.valueOf(session.getProperty(HIVE_STORAGE_FORMAT, String.class).toUpperCase(ENGLISH));
+        return session.getProperty(HIVE_STORAGE_FORMAT, HiveStorageFormat.class);
+    }
+
+    public static HiveCompressionCodec getCompressionCodec(ConnectorSession session)
+    {
+        return session.getProperty(COMPRESSION_CODEC, HiveCompressionCodec.class);
     }
 
     public static boolean isRespectTableFormat(ConnectorSession session)

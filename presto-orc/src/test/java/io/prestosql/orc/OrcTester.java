@@ -27,11 +27,14 @@ import io.prestosql.orc.metadata.CompressionKind;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.BlockBuilder;
+import io.prestosql.spi.type.ArrayType;
 import io.prestosql.spi.type.CharType;
 import io.prestosql.spi.type.DecimalType;
 import io.prestosql.spi.type.Decimals;
+import io.prestosql.spi.type.MapType;
 import io.prestosql.spi.type.NamedTypeSignature;
 import io.prestosql.spi.type.RowFieldName;
+import io.prestosql.spi.type.RowType;
 import io.prestosql.spi.type.SqlDate;
 import io.prestosql.spi.type.SqlDecimal;
 import io.prestosql.spi.type.SqlTimestamp;
@@ -159,7 +162,12 @@ import static org.testng.Assert.assertTrue;
 
 public class OrcTester
 {
-    public static final DataSize MAX_BLOCK_SIZE = new DataSize(1, MEGABYTE);
+    public static final OrcReaderOptions READER_OPTIONS = new OrcReaderOptions()
+            .withMaxReadBlockSize(new DataSize(1, MEGABYTE))
+            .withMaxMergeDistance(new DataSize(1, MEGABYTE))
+            .withMaxBufferSize(new DataSize(1, MEGABYTE))
+            .withStreamBufferSize(new DataSize(1, MEGABYTE))
+            .withTinyStripeThreshold(new DataSize(1, MEGABYTE));
     public static final DateTimeZone HIVE_STORAGE_TIME_ZONE = DateTimeZone.forID("America/Bahia_Banderas");
 
     private static final Metadata METADATA = createTestMetadataManager();
@@ -489,8 +497,7 @@ public class OrcTester
             assertEquals(actual, expected);
             return;
         }
-        String baseType = type.getTypeSignature().getBase();
-        if (StandardTypes.ARRAY.equals(baseType)) {
+        if (type instanceof ArrayType) {
             List<?> actualArray = (List<?>) actual;
             List<?> expectedArray = (List<?>) expected;
             assertEquals(actualArray.size(), expectedArray.size());
@@ -502,7 +509,7 @@ public class OrcTester
                 assertColumnValueEquals(elementType, actualElement, expectedElement);
             }
         }
-        else if (StandardTypes.MAP.equals(baseType)) {
+        else if (type instanceof MapType) {
             Map<?, ?> actualMap = (Map<?, ?>) actual;
             Map<?, ?> expectedMap = (Map<?, ?>) expected;
             assertEquals(actualMap.size(), expectedMap.size());
@@ -526,7 +533,7 @@ public class OrcTester
             }
             assertTrue(expectedEntries.isEmpty(), "Unmatched entries " + expectedEntries);
         }
-        else if (StandardTypes.ROW.equals(baseType)) {
+        else if (type instanceof RowType) {
             List<Type> fieldTypes = type.getTypeParameters();
 
             List<?> actualRow = (List<?>) actual;
@@ -559,8 +566,8 @@ public class OrcTester
     static OrcRecordReader createCustomOrcRecordReader(TempFile tempFile, OrcPredicate predicate, Type type, int initialBatchSize)
             throws IOException
     {
-        OrcDataSource orcDataSource = new FileOrcDataSource(tempFile.getFile(), new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), true);
-        OrcReader orcReader = new OrcReader(orcDataSource, new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), MAX_BLOCK_SIZE);
+        OrcDataSource orcDataSource = new FileOrcDataSource(tempFile.getFile(), READER_OPTIONS);
+        OrcReader orcReader = new OrcReader(orcDataSource, READER_OPTIONS);
 
         assertEquals(orcReader.getColumnNames(), ImmutableList.of("test"));
         assertEquals(orcReader.getFooter().getRowsInRowGroup(), 10_000);
@@ -596,7 +603,7 @@ public class OrcTester
 
         writer.write(new Page(blockBuilder.build()));
         writer.close();
-        writer.validate(new FileOrcDataSource(outputFile, new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), true));
+        writer.validate(new FileOrcDataSource(outputFile, READER_OPTIONS));
     }
 
     private static void writeValue(Type type, BlockBuilder blockBuilder, Object value)
@@ -644,8 +651,7 @@ public class OrcTester
                 type.writeLong(blockBuilder, millis);
             }
             else {
-                String baseType = type.getTypeSignature().getBase();
-                if (StandardTypes.ARRAY.equals(baseType)) {
+                if (type instanceof ArrayType) {
                     List<?> array = (List<?>) value;
                     Type elementType = type.getTypeParameters().get(0);
                     BlockBuilder arrayBlockBuilder = blockBuilder.beginBlockEntry();
@@ -654,7 +660,7 @@ public class OrcTester
                     }
                     blockBuilder.closeEntry();
                 }
-                else if (StandardTypes.MAP.equals(baseType)) {
+                else if (type instanceof MapType) {
                     Map<?, ?> map = (Map<?, ?>) value;
                     Type keyType = type.getTypeParameters().get(0);
                     Type valueType = type.getTypeParameters().get(1);
@@ -665,7 +671,7 @@ public class OrcTester
                     }
                     blockBuilder.closeEntry();
                 }
-                else if (StandardTypes.ROW.equals(baseType)) {
+                else if (type instanceof RowType) {
                     List<?> array = (List<?>) value;
                     List<Type> fieldTypes = type.getTypeParameters();
                     BlockBuilder rowBlockBuilder = blockBuilder.beginBlockEntry();
@@ -893,15 +899,15 @@ public class OrcTester
             DecimalType decimalType = (DecimalType) type;
             return getPrimitiveJavaObjectInspector(new DecimalTypeInfo(decimalType.getPrecision(), decimalType.getScale()));
         }
-        if (type.getTypeSignature().getBase().equals(StandardTypes.ARRAY)) {
+        if (type instanceof ArrayType) {
             return getStandardListObjectInspector(getJavaObjectInspector(type.getTypeParameters().get(0)));
         }
-        if (type.getTypeSignature().getBase().equals(StandardTypes.MAP)) {
+        if (type instanceof MapType) {
             ObjectInspector keyObjectInspector = getJavaObjectInspector(type.getTypeParameters().get(0));
             ObjectInspector valueObjectInspector = getJavaObjectInspector(type.getTypeParameters().get(1));
             return getStandardMapObjectInspector(keyObjectInspector, valueObjectInspector);
         }
-        if (type.getTypeSignature().getBase().equals(StandardTypes.ROW)) {
+        if (type instanceof RowType) {
             return getStandardStructObjectInspector(
                     type.getTypeSignature().getParameters().stream()
                             .map(parameter -> parameter.getNamedTypeSignature().getName().get())
@@ -967,13 +973,13 @@ public class OrcTester
         if (type instanceof DecimalType) {
             return HiveDecimal.create(((SqlDecimal) value).toBigDecimal());
         }
-        if (type.getTypeSignature().getBase().equals(StandardTypes.ARRAY)) {
+        if (type instanceof ArrayType) {
             Type elementType = type.getTypeParameters().get(0);
             return ((List<?>) value).stream()
                     .map(element -> preprocessWriteValueHive(elementType, element))
                     .collect(toList());
         }
-        if (type.getTypeSignature().getBase().equals(StandardTypes.MAP)) {
+        if (type instanceof MapType) {
             Type keyType = type.getTypeParameters().get(0);
             Type valueType = type.getTypeParameters().get(1);
             Map<Object, Object> newMap = new HashMap<>();
@@ -982,7 +988,7 @@ public class OrcTester
             }
             return newMap;
         }
-        if (type.getTypeSignature().getBase().equals(StandardTypes.ROW)) {
+        if (type instanceof RowType) {
             List<?> fieldValues = (List<?>) value;
             List<Type> fieldTypes = type.getTypeParameters();
             List<Object> newStruct = new ArrayList<>();
@@ -1080,12 +1086,12 @@ public class OrcTester
 
     private static Type arrayType(Type elementType)
     {
-        return METADATA.getTypeManager().getParameterizedType(StandardTypes.ARRAY, ImmutableList.of(TypeSignatureParameter.of(elementType.getTypeSignature())));
+        return METADATA.getParameterizedType(StandardTypes.ARRAY, ImmutableList.of(TypeSignatureParameter.typeParameter(elementType.getTypeSignature())));
     }
 
     private static Type mapType(Type keyType, Type valueType)
     {
-        return METADATA.getTypeManager().getParameterizedType(StandardTypes.MAP, ImmutableList.of(TypeSignatureParameter.of(keyType.getTypeSignature()), TypeSignatureParameter.of(valueType.getTypeSignature())));
+        return METADATA.getParameterizedType(StandardTypes.MAP, ImmutableList.of(TypeSignatureParameter.typeParameter(keyType.getTypeSignature()), TypeSignatureParameter.typeParameter(valueType.getTypeSignature())));
     }
 
     private static Type rowType(Type... fieldTypes)
@@ -1094,8 +1100,8 @@ public class OrcTester
         for (int i = 0; i < fieldTypes.length; i++) {
             String filedName = "field_" + i;
             Type fieldType = fieldTypes[i];
-            typeSignatureParameters.add(TypeSignatureParameter.of(new NamedTypeSignature(Optional.of(new RowFieldName(filedName, false)), fieldType.getTypeSignature())));
+            typeSignatureParameters.add(TypeSignatureParameter.namedTypeParameter(new NamedTypeSignature(Optional.of(new RowFieldName(filedName, false)), fieldType.getTypeSignature())));
         }
-        return METADATA.getTypeManager().getParameterizedType(StandardTypes.ROW, typeSignatureParameters.build());
+        return METADATA.getParameterizedType(StandardTypes.ROW, typeSignatureParameters.build());
     }
 }

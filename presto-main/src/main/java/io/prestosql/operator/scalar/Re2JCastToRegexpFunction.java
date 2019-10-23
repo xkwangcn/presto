@@ -17,21 +17,20 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
 import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.SqlOperator;
 import io.prestosql.spi.PrestoException;
-import io.prestosql.spi.type.TypeManager;
 import io.prestosql.type.Re2JRegexp;
-import io.prestosql.type.Re2JRegexpType;
 
 import java.lang.invoke.MethodHandle;
 
+import static io.prestosql.operator.TypeSignatureParser.parseTypeSignature;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static io.prestosql.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.prestosql.spi.function.OperatorType.CAST;
 import static io.prestosql.spi.type.Chars.padSpaces;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.type.Re2JRegexpType.RE2J_REGEXP;
 import static io.prestosql.util.Reflection.methodHandle;
 import static java.lang.invoke.MethodHandles.insertArguments;
 import static java.util.Collections.emptyList;
@@ -57,14 +56,14 @@ public class Re2JCastToRegexpFunction
 
     private Re2JCastToRegexpFunction(String sourceType, int dfaStatesLimit, int dfaRetries, boolean padSpaces)
     {
-        super(CAST, emptyList(), emptyList(), parseTypeSignature(Re2JRegexpType.NAME), ImmutableList.of(parseTypeSignature(sourceType, ImmutableSet.of("x"))));
+        super(CAST, emptyList(), emptyList(), RE2J_REGEXP.getTypeSignature(), ImmutableList.of(parseTypeSignature(sourceType, ImmutableSet.of("x"))));
         this.dfaStatesLimit = dfaStatesLimit;
         this.dfaRetries = dfaRetries;
         this.padSpaces = padSpaces;
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         return new ScalarFunctionImplementation(
                 false,

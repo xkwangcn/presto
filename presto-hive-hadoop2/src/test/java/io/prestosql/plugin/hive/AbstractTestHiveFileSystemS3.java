@@ -14,7 +14,6 @@
 package io.prestosql.plugin.hive;
 
 import com.google.common.collect.ImmutableSet;
-import io.prestosql.plugin.hive.s3.ConfigurationInitializer;
 import io.prestosql.plugin.hive.s3.HiveS3Config;
 import io.prestosql.plugin.hive.s3.PrestoS3ConfigurationInitializer;
 import org.apache.hadoop.fs.Path;
@@ -41,15 +40,16 @@ public abstract class AbstractTestHiveFileSystemS3
         this.awsSecretKey = awsSecretKey;
         this.writableBucket = writableBucket;
 
-        super.setup(host, port, databaseName, this::createHdfsConfiguration, s3SelectPushdownEnabled);
+        setup(host, port, databaseName, s3SelectPushdownEnabled, createHdfsConfiguration());
     }
 
-    HdfsConfiguration createHdfsConfiguration(HiveConfig config)
+    private HdfsConfiguration createHdfsConfiguration()
     {
         ConfigurationInitializer s3Config = new PrestoS3ConfigurationInitializer(new HiveS3Config()
                 .setS3AwsAccessKey(awsAccessKey)
                 .setS3AwsSecretKey(awsSecretKey));
-        return new HiveHdfsConfiguration(new HdfsConfigurationInitializer(config, ImmutableSet.of(s3Config)), ImmutableSet.of());
+        HdfsConfigurationInitializer initializer = new HdfsConfigurationInitializer(new HdfsConfig(), ImmutableSet.of(s3Config));
+        return new HiveHdfsConfiguration(initializer, ImmutableSet.of());
     }
 
     @Override

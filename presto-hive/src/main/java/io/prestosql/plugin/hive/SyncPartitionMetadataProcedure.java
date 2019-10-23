@@ -16,6 +16,7 @@ package io.prestosql.plugin.hive;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
+import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.plugin.hive.metastore.Column;
 import io.prestosql.plugin.hive.metastore.Partition;
 import io.prestosql.plugin.hive.metastore.SemiTransactionalHiveMetastore;
@@ -49,7 +50,7 @@ import static io.prestosql.plugin.hive.HiveMetadata.PRESTO_QUERY_ID_NAME;
 import static io.prestosql.plugin.hive.HivePartitionManager.extractPartitionValues;
 import static io.prestosql.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT;
 import static io.prestosql.spi.block.MethodHandleUtil.methodHandle;
-import static io.prestosql.spi.type.StandardTypes.VARCHAR;
+import static io.prestosql.spi.type.VarcharType.VARCHAR;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
@@ -104,11 +105,12 @@ public class SyncPartitionMetadataProcedure
     private void doSyncPartitionMetadata(ConnectorSession session, String schemaName, String tableName, String mode)
     {
         SyncMode syncMode = toSyncMode(mode);
-        HdfsContext context = new HdfsContext(session, schemaName, tableName);
+        HdfsContext hdfsContext = new HdfsContext(session, schemaName, tableName);
+        HiveIdentity identity = new HiveIdentity(session);
         SemiTransactionalHiveMetastore metastore = ((HiveMetadata) hiveMetadataFactory.get()).getMetastore();
         SchemaTableName schemaTableName = new SchemaTableName(schemaName, tableName);
 
-        Table table = metastore.getTable(schemaName, tableName)
+        Table table = metastore.getTable(identity, schemaName, tableName)
                 .orElseThrow(() -> new TableNotFoundException(schemaTableName));
         if (table.getPartitionColumns().isEmpty()) {
             throw new PrestoException(INVALID_PROCEDURE_ARGUMENT, "Table is not partitioned: " + schemaTableName);
@@ -119,8 +121,8 @@ public class SyncPartitionMetadataProcedure
         Set<String> partitionsToDrop;
 
         try {
-            FileSystem fileSystem = hdfsEnvironment.getFileSystem(context, tableLocation);
-            List<String> partitionsInMetastore = metastore.getPartitionNames(schemaName, tableName)
+            FileSystem fileSystem = hdfsEnvironment.getFileSystem(hdfsContext, tableLocation);
+            List<String> partitionsInMetastore = metastore.getPartitionNames(identity, schemaName, tableName)
                     .orElseThrow(() -> new TableNotFoundException(schemaTableName));
             List<String> partitionsInFileSystem = listDirectory(fileSystem, fileSystem.getFileStatus(tableLocation), table.getPartitionColumns(), table.getPartitionColumns().size()).stream()
                     .map(fileStatus -> fileStatus.getPath().toUri())
@@ -147,7 +149,7 @@ public class SyncPartitionMetadataProcedure
 
         try {
             return Stream.of(fileSystem.listStatus(current.getPath()))
-                    .filter(fileStatus -> isValidPartitionPath(fileSystem, fileStatus, partitionColumns.get(partitionColumns.size() - depth)))
+                    .filter(fileStatus -> isValidPartitionPath(fileStatus, partitionColumns.get(partitionColumns.size() - depth)))
                     .flatMap(directory -> listDirectory(fileSystem, directory, partitionColumns, depth - 1).stream())
                     .collect(toImmutableList());
         }
@@ -156,16 +158,11 @@ public class SyncPartitionMetadataProcedure
         }
     }
 
-    private static boolean isValidPartitionPath(FileSystem fileSystem, FileStatus file, Column column)
+    private static boolean isValidPartitionPath(FileStatus file, Column column)
     {
-        try {
-            Path path = file.getPath();
-            String prefix = column.getName() + '=';
-            return fileSystem.isDirectory(path) && path.getName().startsWith(prefix);
-        }
-        catch (IOException e) {
-            throw new PrestoException(HIVE_FILESYSTEM_ERROR, e);
-        }
+        Path path = file.getPath();
+        String prefix = column.getName() + '=';
+        return file.isDirectory() && path.getName().startsWith(prefix);
     }
 
     // calculate relative complement of set b with respect to set a

@@ -82,6 +82,12 @@ public class TableScanOperator
         }
 
         @Override
+        public PlanNodeId getPlanNodeId()
+        {
+            return sourceId;
+        }
+
+        @Override
         public String getOperatorType()
         {
             return TableScanOperator.class.getSimpleName();
@@ -274,7 +280,7 @@ public class TableScanOperator
             return null;
         }
         if (source == null) {
-            source = pageSourceProvider.createPageSource(operatorContext.getSession(), split, table, columns);
+            source = pageSourceProvider.createPageSource(operatorContext.getSession(), split, table, columns, null);
         }
 
         Page page = source.getNextPage();

@@ -69,6 +69,9 @@ public interface ThriftMetastoreClient
     Table getTable(String databaseName, String tableName)
             throws TException;
 
+    Table getTableWithCapabilities(String databaseName, String tableName)
+            throws TException;
+
     List<FieldSchema> getFields(String databaseName, String tableName)
             throws TException;
 
@@ -142,5 +145,8 @@ public interface ThriftMetastoreClient
             throws TException;
 
     void setUGI(String userName)
+            throws TException;
+
+    String getDelegationToken(String userName)
             throws TException;
 }

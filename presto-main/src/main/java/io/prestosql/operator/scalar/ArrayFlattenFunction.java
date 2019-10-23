@@ -16,14 +16,14 @@ package io.prestosql.operator.scalar;
 import com.google.common.collect.ImmutableList;
 import io.prestosql.metadata.BoundVariables;
 import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.SqlScalarFunction;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.BlockBuilder;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.spi.type.TypeSignatureParameter;
 
 import java.lang.invoke.MethodHandle;
@@ -31,7 +31,7 @@ import java.lang.invoke.MethodHandle;
 import static io.prestosql.metadata.Signature.typeVariable;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.TypeSignature.arrayType;
 import static io.prestosql.util.Reflection.methodHandle;
 import static java.lang.Math.toIntExact;
 
@@ -48,8 +48,8 @@ public class ArrayFlattenFunction
                 FunctionKind.SCALAR,
                 ImmutableList.of(typeVariable("E")),
                 ImmutableList.of(),
-                parseTypeSignature("array(E)"),
-                ImmutableList.of(parseTypeSignature("array(array(E))")),
+                arrayType(new TypeSignature("E")),
+                ImmutableList.of(arrayType(arrayType(new TypeSignature("E")))),
                 false));
     }
 
@@ -72,10 +72,10 @@ public class ArrayFlattenFunction
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type elementType = boundVariables.getTypeVariable("E");
-        Type arrayType = typeManager.getParameterizedType(StandardTypes.ARRAY, ImmutableList.of(TypeSignatureParameter.of(elementType.getTypeSignature())));
+        Type arrayType = metadata.getParameterizedType(StandardTypes.ARRAY, ImmutableList.of(TypeSignatureParameter.typeParameter(elementType.getTypeSignature())));
         MethodHandle methodHandle = METHOD_HANDLE.bindTo(elementType).bindTo(arrayType);
         return new ScalarFunctionImplementation(
                 false,

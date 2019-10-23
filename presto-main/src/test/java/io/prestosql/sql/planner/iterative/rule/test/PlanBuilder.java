@@ -22,7 +22,7 @@ import com.google.common.collect.Maps;
 import io.prestosql.connector.CatalogName;
 import io.prestosql.metadata.IndexHandle;
 import io.prestosql.metadata.Metadata;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.metadata.TableHandle;
 import io.prestosql.spi.block.SortOrder;
 import io.prestosql.spi.connector.ColumnHandle;
@@ -47,15 +47,17 @@ import io.prestosql.sql.planner.plan.AggregationNode.Step;
 import io.prestosql.sql.planner.plan.ApplyNode;
 import io.prestosql.sql.planner.plan.AssignUniqueId;
 import io.prestosql.sql.planner.plan.Assignments;
+import io.prestosql.sql.planner.plan.CorrelatedJoinNode;
 import io.prestosql.sql.planner.plan.DeleteNode;
 import io.prestosql.sql.planner.plan.DistinctLimitNode;
 import io.prestosql.sql.planner.plan.EnforceSingleRowNode;
+import io.prestosql.sql.planner.plan.ExceptNode;
 import io.prestosql.sql.planner.plan.ExchangeNode;
 import io.prestosql.sql.planner.plan.FilterNode;
 import io.prestosql.sql.planner.plan.IndexJoinNode;
 import io.prestosql.sql.planner.plan.IndexSourceNode;
+import io.prestosql.sql.planner.plan.IntersectNode;
 import io.prestosql.sql.planner.plan.JoinNode;
-import io.prestosql.sql.planner.plan.LateralJoinNode;
 import io.prestosql.sql.planner.plan.LimitNode;
 import io.prestosql.sql.planner.plan.MarkDistinctNode;
 import io.prestosql.sql.planner.plan.OffsetNode;
@@ -330,8 +332,14 @@ public class PlanBuilder
         {
             checkArgument(expression instanceof FunctionCall);
             FunctionCall aggregation = (FunctionCall) expression;
-            Signature signature = metadata.getFunctionRegistry().resolveFunction(aggregation.getName(), TypeSignatureProvider.fromTypes(inputTypes));
-            return addAggregation(output, new Aggregation(aggregation, signature, mask));
+            ResolvedFunction resolvedFunction = metadata.resolveFunction(aggregation.getName(), TypeSignatureProvider.fromTypes(inputTypes));
+            return addAggregation(output, new Aggregation(
+                    resolvedFunction,
+                    aggregation.getArguments(),
+                    aggregation.isDistinct(),
+                    aggregation.getFilter().map(Symbol::from),
+                    aggregation.getOrderBy().map(OrderingScheme::fromOrderBy),
+                    mask));
         }
 
         public AggregationBuilder addAggregation(Symbol output, Aggregation aggregation)
@@ -410,15 +418,15 @@ public class PlanBuilder
         return new AssignUniqueId(idAllocator.getNextId(), source, unique);
     }
 
-    public LateralJoinNode lateral(List<Symbol> correlation, PlanNode input, PlanNode subquery)
+    public CorrelatedJoinNode correlatedJoin(List<Symbol> correlation, PlanNode input, PlanNode subquery)
     {
-        return lateral(correlation, input, LateralJoinNode.Type.INNER, TRUE_LITERAL, subquery);
+        return correlatedJoin(correlation, input, CorrelatedJoinNode.Type.INNER, TRUE_LITERAL, subquery);
     }
 
-    public LateralJoinNode lateral(List<Symbol> correlation, PlanNode input, LateralJoinNode.Type type, Expression filter, PlanNode subquery)
+    public CorrelatedJoinNode correlatedJoin(List<Symbol> correlation, PlanNode input, CorrelatedJoinNode.Type type, Expression filter, PlanNode subquery)
     {
         NullLiteral originSubquery = new NullLiteral(); // does not matter for tests
-        return new LateralJoinNode(idAllocator.getNextId(), input, subquery, correlation, type, filter, originSubquery);
+        return new CorrelatedJoinNode(idAllocator.getNextId(), input, subquery, correlation, type, filter, originSubquery);
     }
 
     public TableScanNode tableScan(List<Symbol> symbols, Map<Symbol, ColumnHandle> assignments)
@@ -726,8 +734,20 @@ public class PlanBuilder
 
     public UnionNode union(ListMultimap<Symbol, Symbol> outputsToInputs, List<PlanNode> sources)
     {
-        ImmutableList<Symbol> outputs = outputsToInputs.keySet().stream().collect(toImmutableList());
+        List<Symbol> outputs = ImmutableList.copyOf(outputsToInputs.keySet());
         return new UnionNode(idAllocator.getNextId(), sources, outputsToInputs, outputs);
+    }
+
+    public IntersectNode intersect(ListMultimap<Symbol, Symbol> outputsToInputs, List<PlanNode> sources)
+    {
+        List<Symbol> outputs = ImmutableList.copyOf(outputsToInputs.keySet());
+        return new IntersectNode(idAllocator.getNextId(), sources, outputsToInputs, outputs);
+    }
+
+    public ExceptNode except(ListMultimap<Symbol, Symbol> outputsToInputs, List<PlanNode> sources)
+    {
+        List<Symbol> outputs = ImmutableList.copyOf(outputsToInputs.keySet());
+        return new ExceptNode(idAllocator.getNextId(), sources, outputsToInputs, outputs);
     }
 
     public TableWriterNode tableWriter(List<Symbol> columns, List<String> columnNames, PlanNode source)

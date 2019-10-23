@@ -67,12 +67,13 @@ import io.prestosql.execution.StartTransactionTask;
 import io.prestosql.execution.TaskManagerConfig;
 import io.prestosql.execution.TaskSource;
 import io.prestosql.execution.resourcegroups.NoOpResourceGroupManager;
-import io.prestosql.execution.scheduler.LegacyNetworkTopology;
 import io.prestosql.execution.scheduler.NodeScheduler;
 import io.prestosql.execution.scheduler.NodeSchedulerConfig;
+import io.prestosql.execution.scheduler.UniformNodeSelectorFactory;
 import io.prestosql.execution.warnings.WarningCollector;
 import io.prestosql.index.IndexManager;
 import io.prestosql.memory.MemoryManagerConfig;
+import io.prestosql.memory.NodeMemoryConfig;
 import io.prestosql.metadata.AnalyzePropertyManager;
 import io.prestosql.metadata.CatalogManager;
 import io.prestosql.metadata.ColumnPropertyManager;
@@ -107,6 +108,7 @@ import io.prestosql.spi.PageIndexerFactory;
 import io.prestosql.spi.PageSorter;
 import io.prestosql.spi.Plugin;
 import io.prestosql.spi.connector.ConnectorFactory;
+import io.prestosql.spi.type.Type;
 import io.prestosql.spiller.FileSingleStreamSpillerFactory;
 import io.prestosql.spiller.GenericPartitioningSpillerFactory;
 import io.prestosql.spiller.GenericSpillerFactory;
@@ -164,7 +166,6 @@ import io.prestosql.testing.PageConsumerOperator.PageConsumerOutputFactory;
 import io.prestosql.transaction.InMemoryTransactionManager;
 import io.prestosql.transaction.TransactionManager;
 import io.prestosql.transaction.TransactionManagerConfig;
-import io.prestosql.type.TypeRegistry;
 import io.prestosql.util.FinalizerService;
 import io.prestosql.version.EmbedVersion;
 import org.intellij.lang.annotations.Language;
@@ -196,6 +197,7 @@ import static io.prestosql.cost.StatsCalculatorModule.createNewStatsCalculator;
 import static io.prestosql.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.GROUPED_SCHEDULING;
 import static io.prestosql.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.UNGROUPED_SCHEDULING;
 import static io.prestosql.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
+import static io.prestosql.sql.ParameterUtils.parameterExtractor;
 import static io.prestosql.sql.ParsingUtil.createParsingOptions;
 import static io.prestosql.sql.planner.optimizations.PlanNodeSearcher.searchFrom;
 import static io.prestosql.sql.testing.TreeAssertions.assertFormattedSql;
@@ -217,7 +219,6 @@ public class LocalQueryRunner
     private final SqlParser sqlParser;
     private final PlanFragmenter planFragmenter;
     private final InMemoryNodeManager nodeManager;
-    private final TypeRegistry typeRegistry;
     private final PageSorter pageSorter;
     private final PageIndexerFactory pageIndexerFactory;
     private final MetadataManager metadata;
@@ -283,15 +284,10 @@ public class LocalQueryRunner
 
         this.sqlParser = new SqlParser();
         this.nodeManager = new InMemoryNodeManager();
-        this.typeRegistry = new TypeRegistry();
         this.pageSorter = new PagesIndexPageSorter(new PagesIndex.TestingFactory(false));
         this.indexManager = new IndexManager();
         this.nodeSchedulerConfig = new NodeSchedulerConfig().setIncludeCoordinator(true);
-        NodeScheduler nodeScheduler = new NodeScheduler(
-                new LegacyNetworkTopology(),
-                nodeManager,
-                nodeSchedulerConfig,
-                new NodeTaskMap(finalizerService));
+        NodeScheduler nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(nodeManager, nodeSchedulerConfig, new NodeTaskMap(finalizerService)));
         this.featuresConfig = requireNonNull(featuresConfig, "featuresConfig is null");
         this.pageSinkManager = new PageSinkManager();
         CatalogManager catalogManager = new CatalogManager();
@@ -304,8 +300,7 @@ public class LocalQueryRunner
 
         this.metadata = new MetadataManager(
                 featuresConfig,
-                typeRegistry,
-                new SessionPropertyManager(new SystemSessionProperties(new QueryManagerConfig(), taskManagerConfig, new MemoryManagerConfig(), featuresConfig)),
+                new SessionPropertyManager(new SystemSessionProperties(new QueryManagerConfig(), taskManagerConfig, new MemoryManagerConfig(), featuresConfig, new NodeMemoryConfig())),
                 new SchemaPropertyManager(),
                 new TablePropertyManager(),
                 new ColumnPropertyManager(),
@@ -315,7 +310,7 @@ public class LocalQueryRunner
         this.planFragmenter = new PlanFragmenter(this.metadata, this.nodePartitioningManager, new QueryManagerConfig());
         this.joinCompiler = new JoinCompiler(metadata);
         this.pageIndexerFactory = new GroupByHashPageIndexerFactory(joinCompiler);
-        this.statsCalculator = createNewStatsCalculator(metadata);
+        this.statsCalculator = createNewStatsCalculator(metadata, new TypeAnalyzer(sqlParser, metadata));
         this.taskCountEstimator = new TaskCountEstimator(() -> nodeCountForStats);
         this.costCalculator = new CostCalculatorUsingExchanges(taskCountEstimator);
         this.estimatedExchangesCostCalculator = new CostCalculatorWithEstimatedExchanges(costCalculator, taskCountEstimator);
@@ -340,7 +335,6 @@ public class LocalQueryRunner
                 nodeManager,
                 nodeInfo,
                 new EmbedVersion(new ServerConfig()),
-                typeRegistry,
                 pageSorter,
                 pageIndexerFactory,
                 transactionManager);
@@ -353,7 +347,7 @@ public class LocalQueryRunner
                 new TablePropertiesSystemTable(transactionManager, metadata),
                 new ColumnPropertiesSystemTable(transactionManager, metadata),
                 new AnalyzePropertiesSystemTable(transactionManager, metadata),
-                new TransactionsSystemTable(typeRegistry, transactionManager)),
+                new TransactionsSystemTable(metadata, transactionManager)),
                 ImmutableSet.of());
 
         this.pluginManager = new PluginManager(
@@ -365,11 +359,10 @@ public class LocalQueryRunner
                 accessControl,
                 new PasswordAuthenticatorManager(),
                 new EventListenerManager(),
-                new SessionPropertyDefaults(nodeInfo),
-                typeRegistry);
+                new SessionPropertyDefaults(nodeInfo));
 
         connectorManager.addConnectorFactory(globalSystemConnectorFactory);
-        connectorManager.createConnection(GlobalSystemConnector.NAME, GlobalSystemConnector.NAME, ImmutableMap.of());
+        connectorManager.createCatalog(GlobalSystemConnector.NAME, GlobalSystemConnector.NAME, ImmutableMap.of());
 
         // add bogus connector for testing session properties
         catalogManager.registerCatalog(createBogusTestingCatalog(TESTING_CATALOG));
@@ -451,9 +444,9 @@ public class LocalQueryRunner
         return 1;
     }
 
-    public TypeRegistry getTypeManager()
+    public void addType(Type type)
     {
-        return typeRegistry;
+        metadata.addType(type);
     }
 
     @Override
@@ -536,7 +529,7 @@ public class LocalQueryRunner
     {
         nodeManager.addCurrentNodeConnector(new CatalogName(catalogName));
         connectorManager.addConnectorFactory(connectorFactory);
-        connectorManager.createConnection(catalogName, connectorFactory.getName(), properties);
+        connectorManager.createCatalog(catalogName, connectorFactory.getName(), properties);
     }
 
     @Override
@@ -684,13 +677,18 @@ public class LocalQueryRunner
         return createDrivers(session, plan, outputFactory, taskContext);
     }
 
+    public SubPlan createSubPlans(Session session, Plan plan, boolean forceSingleNode)
+    {
+        return planFragmenter.createSubPlans(session, plan, forceSingleNode, WarningCollector.NOOP);
+    }
+
     private List<Driver> createDrivers(Session session, Plan plan, OutputFactory outputFactory, TaskContext taskContext)
     {
         if (printPlan) {
             System.out.println(PlanPrinter.textLogicalPlan(plan.getRoot(), plan.getTypes(), metadata, plan.getStatsAndCosts(), session, 0, false));
         }
 
-        SubPlan subplan = planFragmenter.createSubPlans(session, plan, true, WarningCollector.NOOP);
+        SubPlan subplan = createSubPlans(session, plan, true);
         if (!subplan.getChildren().isEmpty()) {
             throw new AssertionError("Expected subplan to have no children");
         }
@@ -811,7 +809,6 @@ public class LocalQueryRunner
         return new PlanOptimizers(
                 metadata,
                 new TypeAnalyzer(sqlParser, metadata),
-                featuresConfig,
                 taskManagerConfig,
                 forceSingleNode,
                 new MBeanExporter(new TestingMBeanServer()),
@@ -846,7 +843,7 @@ public class LocalQueryRunner
                 statsCalculator,
                 costCalculator,
                 dataDefinitionTask);
-        Analyzer analyzer = new Analyzer(session, metadata, sqlParser, accessControl, Optional.of(queryExplainer), preparedQuery.getParameters(), warningCollector);
+        Analyzer analyzer = new Analyzer(session, metadata, sqlParser, accessControl, Optional.of(queryExplainer), preparedQuery.getParameters(), parameterExtractor(preparedQuery.getStatement(), preparedQuery.getParameters()), warningCollector);
 
         LogicalPlanner logicalPlanner = new LogicalPlanner(session, optimizers, new PlanSanityChecker(true), idAllocator, metadata, new TypeAnalyzer(sqlParser, metadata), statsCalculator, costCalculator, warningCollector);
 

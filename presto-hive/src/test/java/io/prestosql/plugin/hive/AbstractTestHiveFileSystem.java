@@ -13,7 +13,6 @@
  */
 package io.prestosql.plugin.hive;
 
-import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
@@ -23,21 +22,24 @@ import io.airlift.json.JsonCodec;
 import io.airlift.slice.Slice;
 import io.airlift.stats.CounterStat;
 import io.prestosql.GroupByHashPageIndexerFactory;
-import io.prestosql.metadata.MetadataManager;
 import io.prestosql.plugin.hive.AbstractTestHive.HiveTransaction;
 import io.prestosql.plugin.hive.AbstractTestHive.Transaction;
 import io.prestosql.plugin.hive.HdfsEnvironment.HdfsContext;
+import io.prestosql.plugin.hive.authentication.HiveAuthenticationConfig;
+import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.plugin.hive.authentication.NoHdfsAuthentication;
-import io.prestosql.plugin.hive.metastore.CachingHiveMetastore;
 import io.prestosql.plugin.hive.metastore.Database;
 import io.prestosql.plugin.hive.metastore.HiveMetastore;
 import io.prestosql.plugin.hive.metastore.PrincipalPrivileges;
 import io.prestosql.plugin.hive.metastore.Table;
+import io.prestosql.plugin.hive.metastore.cache.CachingHiveMetastore;
+import io.prestosql.plugin.hive.metastore.cache.CachingHiveMetastoreConfig;
 import io.prestosql.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.prestosql.plugin.hive.metastore.thrift.MetastoreLocator;
 import io.prestosql.plugin.hive.metastore.thrift.TestingMetastoreLocator;
 import io.prestosql.plugin.hive.metastore.thrift.ThriftHiveMetastore;
-import io.prestosql.plugin.hive.metastore.thrift.ThriftHiveMetastoreConfig;
+import io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreConfig;
+import io.prestosql.plugin.hive.security.SqlStandardAccessControlMetadata;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ColumnMetadata;
 import io.prestosql.spi.connector.ConnectorMetadata;
@@ -58,7 +60,6 @@ import io.prestosql.spi.security.ConnectorIdentity;
 import io.prestosql.sql.gen.JoinCompiler;
 import io.prestosql.testing.MaterializedResult;
 import io.prestosql.testing.MaterializedRow;
-import io.prestosql.testing.TestingConnectorSession;
 import io.prestosql.testing.TestingNodeManager;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -73,6 +74,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -81,16 +83,19 @@ import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorS
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.plugin.hive.AbstractTestHive.createTableProperties;
 import static io.prestosql.plugin.hive.AbstractTestHive.filterNonHiddenColumnHandles;
 import static io.prestosql.plugin.hive.AbstractTestHive.filterNonHiddenColumnMetadata;
 import static io.prestosql.plugin.hive.AbstractTestHive.getAllSplits;
 import static io.prestosql.plugin.hive.HiveTestUtils.PAGE_SORTER;
 import static io.prestosql.plugin.hive.HiveTestUtils.TYPE_MANAGER;
-import static io.prestosql.plugin.hive.HiveTestUtils.getDefaultHiveDataStreamFactories;
 import static io.prestosql.plugin.hive.HiveTestUtils.getDefaultHiveFileWriterFactories;
+import static io.prestosql.plugin.hive.HiveTestUtils.getDefaultHivePageSourceFactories;
 import static io.prestosql.plugin.hive.HiveTestUtils.getDefaultHiveRecordCursorProvider;
 import static io.prestosql.plugin.hive.HiveTestUtils.getDefaultOrcFileWriterFactory;
+import static io.prestosql.plugin.hive.HiveTestUtils.getHiveSession;
+import static io.prestosql.plugin.hive.HiveTestUtils.getHiveSessionProperties;
 import static io.prestosql.plugin.hive.HiveTestUtils.getTypes;
 import static io.prestosql.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.UNGROUPED_SCHEDULING;
 import static io.prestosql.spi.type.BigintType.BIGINT;
@@ -138,7 +143,7 @@ public abstract class AbstractTestHiveFileSystem
 
     protected abstract Path getBasePath();
 
-    protected void setup(String host, int port, String databaseName, Function<HiveConfig, HdfsConfiguration> hdfsConfigurationProvider, boolean s3SelectPushdownEnabled)
+    protected void setup(String host, int port, String databaseName, boolean s3SelectPushdownEnabled, HdfsConfiguration hdfsConfiguration)
     {
         database = databaseName;
         table = new SchemaTableName(database, "presto_test_external_fs");
@@ -148,22 +153,18 @@ public abstract class AbstractTestHiveFileSystem
 
         config = new HiveConfig().setS3SelectPushdownEnabled(s3SelectPushdownEnabled);
 
-        String proxy = System.getProperty("hive.metastore.thrift.client.socks-proxy");
-        if (proxy != null) {
-            config.setMetastoreSocksProxy(HostAndPort.fromString(proxy));
-        }
+        Optional<HostAndPort> proxy = Optional.ofNullable(System.getProperty("hive.metastore.thrift.client.socks-proxy"))
+                .map(HostAndPort::fromString);
 
-        MetastoreLocator metastoreLocator = new TestingMetastoreLocator(config, host, port);
+        MetastoreLocator metastoreLocator = new TestingMetastoreLocator(proxy, HostAndPort.fromParts(host, port));
+
         ExecutorService executor = newCachedThreadPool(daemonThreadsNamed("hive-%s"));
         HivePartitionManager hivePartitionManager = new HivePartitionManager(TYPE_MANAGER, config);
 
-        HdfsConfiguration hdfsConfiguration = hdfsConfigurationProvider.apply(config);
-
-        hdfsEnvironment = new HdfsEnvironment(hdfsConfiguration, config, new NoHdfsAuthentication());
+        hdfsEnvironment = new HdfsEnvironment(hdfsConfiguration, new HdfsConfig(), new NoHdfsAuthentication());
         metastoreClient = new TestingHiveMetastore(
-                new BridgingHiveMetastore(new ThriftHiveMetastore(metastoreLocator, new ThriftHiveMetastoreConfig())),
+                new BridgingHiveMetastore(new ThriftHiveMetastore(metastoreLocator, new ThriftMetastoreConfig(), new HiveAuthenticationConfig())),
                 executor,
-                config,
                 getBasePath(),
                 hdfsEnvironment);
         locationService = new HiveLocationService(hdfsEnvironment);
@@ -178,7 +179,8 @@ public abstract class AbstractTestHiveFileSystem
                 locationService,
                 partitionUpdateCodec,
                 new HiveTypeTranslator(),
-                new NodeVersion("test_version"));
+                new NodeVersion("test_version"),
+                SqlStandardAccessControlMetadata::new);
         transactionManager = new HiveTransactionManager();
         splitManager = new HiveSplitManager(
                 transactionHandle -> ((HiveMetadata) transactionManager.get(transactionHandle)).getMetastore(),
@@ -198,26 +200,31 @@ public abstract class AbstractTestHiveFileSystem
                 config.getMaxSplitsPerSecond(),
                 config.getRecursiveDirWalkerEnabled());
         pageSinkProvider = new HivePageSinkProvider(
-                getDefaultHiveFileWriterFactories(config),
+                getDefaultHiveFileWriterFactories(config, hdfsEnvironment),
                 hdfsEnvironment,
                 PAGE_SORTER,
                 metastoreClient,
-                new GroupByHashPageIndexerFactory(new JoinCompiler(MetadataManager.createTestMetadataManager())),
+                new GroupByHashPageIndexerFactory(new JoinCompiler(createTestMetadataManager())),
                 TYPE_MANAGER,
                 config,
                 locationService,
                 partitionUpdateCodec,
                 new TestingNodeManager("fake-environment"),
                 new HiveEventClient(),
-                new HiveSessionProperties(config, new OrcFileWriterConfig(), new ParquetFileWriterConfig()),
+                getHiveSessionProperties(config),
                 new HiveWriterStats(),
-                getDefaultOrcFileWriterFactory(config));
-        pageSourceProvider = new HivePageSourceProvider(config, hdfsEnvironment, getDefaultHiveRecordCursorProvider(config), getDefaultHiveDataStreamFactories(config), TYPE_MANAGER);
+                getDefaultOrcFileWriterFactory(config, hdfsEnvironment));
+        pageSourceProvider = new HivePageSourceProvider(
+                config,
+                hdfsEnvironment,
+                getDefaultHiveRecordCursorProvider(config, hdfsEnvironment),
+                getDefaultHivePageSourceFactories(config, hdfsEnvironment),
+                TYPE_MANAGER);
     }
 
     protected ConnectorSession newSession()
     {
-        return new TestingConnectorSession(new HiveSessionProperties(config, new OrcFileWriterConfig(), new ParquetFileWriterConfig()).getSessionProperties());
+        return getHiveSession(config);
     }
 
     protected Transaction newTransaction()
@@ -343,6 +350,10 @@ public abstract class AbstractTestHiveFileSystem
             throws Exception
     {
         for (HiveStorageFormat storageFormat : HiveStorageFormat.values()) {
+            if (storageFormat == HiveStorageFormat.CSV) {
+                // CSV supports only unbounded VARCHAR type
+                continue;
+            }
             createTable(temporaryCreateTable, storageFormat);
             dropTable(temporaryCreateTable);
         }
@@ -416,7 +427,7 @@ public abstract class AbstractTestHiveFileSystem
     private void dropTable(SchemaTableName table)
     {
         try (Transaction transaction = newTransaction()) {
-            transaction.getMetastore(table.getSchemaName()).dropTable(newSession(), table.getSchemaName(), table.getTableName());
+            transaction.getMetastore().dropTable(newSession(), table.getSchemaName(), table.getTableName());
             transaction.commit();
         }
     }
@@ -446,9 +457,9 @@ public abstract class AbstractTestHiveFileSystem
         private final Path basePath;
         private final HdfsEnvironment hdfsEnvironment;
 
-        public TestingHiveMetastore(HiveMetastore delegate, ExecutorService executor, HiveConfig hiveConfig, Path basePath, HdfsEnvironment hdfsEnvironment)
+        public TestingHiveMetastore(HiveMetastore delegate, Executor executor, Path basePath, HdfsEnvironment hdfsEnvironment)
         {
-            super(delegate, executor, hiveConfig);
+            super(delegate, executor, new CachingHiveMetastoreConfig());
             this.basePath = basePath;
             this.hdfsEnvironment = hdfsEnvironment;
         }
@@ -463,32 +474,32 @@ public abstract class AbstractTestHiveFileSystem
         }
 
         @Override
-        public void createTable(Table table, PrincipalPrivileges privileges)
+        public void createTable(HiveIdentity identity, Table table, PrincipalPrivileges privileges)
         {
             // hack to work around the metastore not being configured for S3 or other FS
             Table.Builder tableBuilder = Table.builder(table);
             tableBuilder.getStorageBuilder().setLocation("/");
-            super.createTable(tableBuilder.build(), privileges);
+            super.createTable(identity, tableBuilder.build(), privileges);
         }
 
         @Override
-        public void dropTable(String databaseName, String tableName, boolean deleteData)
+        public void dropTable(HiveIdentity identity, String databaseName, String tableName, boolean deleteData)
         {
             try {
-                Optional<Table> table = getTable(databaseName, tableName);
+                Optional<Table> table = getTable(identity, databaseName, tableName);
                 if (!table.isPresent()) {
                     throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
                 }
 
                 // hack to work around the metastore not being configured for S3 or other FS
-                List<String> locations = listAllDataPaths(databaseName, tableName);
+                List<String> locations = listAllDataPaths(identity, databaseName, tableName);
 
                 Table.Builder tableBuilder = Table.builder(table.get());
                 tableBuilder.getStorageBuilder().setLocation("/");
 
                 // drop table
-                replaceTable(databaseName, tableName, tableBuilder.build(), new PrincipalPrivileges(ImmutableMultimap.of(), ImmutableMultimap.of()));
-                delegate.dropTable(databaseName, tableName, false);
+                replaceTable(identity, databaseName, tableName, tableBuilder.build(), new PrincipalPrivileges(ImmutableMultimap.of(), ImmutableMultimap.of()));
+                delegate.dropTable(identity, databaseName, tableName, false);
 
                 // drop data
                 if (deleteData) {
@@ -508,7 +519,8 @@ public abstract class AbstractTestHiveFileSystem
 
         public void updateTableLocation(String databaseName, String tableName, String location)
         {
-            Optional<Table> table = getTable(databaseName, tableName);
+            HiveIdentity identity = new HiveIdentity(TESTING_CONTEXT.getIdentity());
+            Optional<Table> table = getTable(identity, databaseName, tableName);
             if (!table.isPresent()) {
                 throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
             }
@@ -517,13 +529,13 @@ public abstract class AbstractTestHiveFileSystem
             tableBuilder.getStorageBuilder().setLocation(location);
 
             // NOTE: this clears the permissions
-            replaceTable(databaseName, tableName, tableBuilder.build(), new PrincipalPrivileges(ImmutableMultimap.of(), ImmutableMultimap.of()));
+            replaceTable(identity, databaseName, tableName, tableBuilder.build(), new PrincipalPrivileges(ImmutableMultimap.of(), ImmutableMultimap.of()));
         }
 
-        private List<String> listAllDataPaths(String schemaName, String tableName)
+        private List<String> listAllDataPaths(HiveIdentity identity, String schemaName, String tableName)
         {
             ImmutableList.Builder<String> locations = ImmutableList.builder();
-            Table table = getTable(schemaName, tableName).get();
+            Table table = getTable(identity, schemaName, tableName).get();
             if (table.getStorage().getLocation() != null) {
                 // For partitioned table, there should be nothing directly under this directory.
                 // But including this location in the set makes the directory content assert more
@@ -531,9 +543,9 @@ public abstract class AbstractTestHiveFileSystem
                 locations.add(table.getStorage().getLocation());
             }
 
-            Optional<List<String>> partitionNames = getPartitionNames(schemaName, tableName);
+            Optional<List<String>> partitionNames = getPartitionNames(identity, schemaName, tableName);
             if (partitionNames.isPresent()) {
-                getPartitionsByNames(schemaName, tableName, partitionNames.get()).values().stream()
+                getPartitionsByNames(identity, schemaName, tableName, partitionNames.get()).values().stream()
                         .map(Optional::get)
                         .map(partition -> partition.getStorage().getLocation())
                         .filter(location -> !location.startsWith(table.getStorage().getLocation()))

@@ -21,6 +21,7 @@ import io.prestosql.plugin.hive.coercions.FloatToDoubleCoercer;
 import io.prestosql.plugin.hive.coercions.IntegerNumberToVarcharCoercer;
 import io.prestosql.plugin.hive.coercions.IntegerNumberUpscaleCoercer;
 import io.prestosql.plugin.hive.coercions.VarcharToIntegerNumberCoercer;
+import io.prestosql.plugin.hive.util.HiveBucketing.BucketingVersion;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.block.ArrayBlock;
@@ -38,6 +39,7 @@ import io.prestosql.spi.type.DecimalType;
 import io.prestosql.spi.type.MapType;
 import io.prestosql.spi.type.Type;
 import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.VarbinaryType;
 import io.prestosql.spi.type.VarcharType;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import org.apache.hadoop.hive.serde2.typeinfo.ListTypeInfo;
@@ -52,8 +54,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
 
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.prestosql.plugin.hive.HiveBucketing.getHiveBucket;
+import static io.airlift.slice.Slices.utf8Slice;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_CURSOR_ERROR;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_INVALID_BUCKET_FILES;
 import static io.prestosql.plugin.hive.HivePageSourceProvider.ColumnMappingKind.PREFILLED;
@@ -63,29 +66,30 @@ import static io.prestosql.plugin.hive.HiveType.HIVE_FLOAT;
 import static io.prestosql.plugin.hive.HiveType.HIVE_INT;
 import static io.prestosql.plugin.hive.HiveType.HIVE_LONG;
 import static io.prestosql.plugin.hive.HiveType.HIVE_SHORT;
-import static io.prestosql.plugin.hive.HiveUtil.bigintPartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.booleanPartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.charPartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.datePartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.doublePartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.extractStructFieldTypes;
-import static io.prestosql.plugin.hive.HiveUtil.floatPartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.integerPartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.isArrayType;
-import static io.prestosql.plugin.hive.HiveUtil.isHiveNull;
-import static io.prestosql.plugin.hive.HiveUtil.isMapType;
-import static io.prestosql.plugin.hive.HiveUtil.isRowType;
-import static io.prestosql.plugin.hive.HiveUtil.longDecimalPartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.shortDecimalPartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.smallintPartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.timestampPartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.tinyintPartitionKey;
-import static io.prestosql.plugin.hive.HiveUtil.varcharPartitionKey;
 import static io.prestosql.plugin.hive.coercions.DecimalCoercers.createDecimalToDecimalCoercer;
 import static io.prestosql.plugin.hive.coercions.DecimalCoercers.createDecimalToDoubleCoercer;
 import static io.prestosql.plugin.hive.coercions.DecimalCoercers.createDecimalToRealCoercer;
 import static io.prestosql.plugin.hive.coercions.DecimalCoercers.createDoubleToDecimalCoercer;
 import static io.prestosql.plugin.hive.coercions.DecimalCoercers.createRealToDecimalCoercer;
+import static io.prestosql.plugin.hive.util.HiveBucketing.getHiveBucket;
+import static io.prestosql.plugin.hive.util.HiveUtil.bigintPartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.booleanPartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.charPartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.datePartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.doublePartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.extractStructFieldTypes;
+import static io.prestosql.plugin.hive.util.HiveUtil.floatPartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.integerPartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.isArrayType;
+import static io.prestosql.plugin.hive.util.HiveUtil.isHiveNull;
+import static io.prestosql.plugin.hive.util.HiveUtil.isMapType;
+import static io.prestosql.plugin.hive.util.HiveUtil.isRowType;
+import static io.prestosql.plugin.hive.util.HiveUtil.longDecimalPartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.shortDecimalPartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.smallintPartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.timestampPartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.tinyintPartitionKey;
+import static io.prestosql.plugin.hive.util.HiveUtil.varcharPartitionKey;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.prestosql.spi.block.ColumnarArray.toColumnarArray;
 import static io.prestosql.spi.block.ColumnarMap.toColumnarMap;
@@ -101,6 +105,7 @@ import static io.prestosql.spi.type.IntegerType.INTEGER;
 import static io.prestosql.spi.type.RealType.REAL;
 import static io.prestosql.spi.type.SmallintType.SMALLINT;
 import static io.prestosql.spi.type.TimestampType.TIMESTAMP;
+import static io.prestosql.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
 import static io.prestosql.spi.type.TinyintType.TINYINT;
 import static io.prestosql.spi.type.Varchars.isVarcharType;
 import static java.lang.String.format;
@@ -144,7 +149,7 @@ public class HivePageSource
             HiveColumnHandle column = columnMapping.getHiveColumnHandle();
 
             String name = column.getName();
-            Type type = typeManager.getType(column.getTypeSignature());
+            Type type = column.getType();
             types[columnIndex] = type;
 
             if (columnMapping.getCoercionFrom().isPresent()) {
@@ -192,14 +197,17 @@ public class HivePageSource
                 else if (type.equals(DATE)) {
                     prefilledValue = datePartitionKey(columnValue, name);
                 }
-                else if (type.equals(TIMESTAMP)) {
-                    prefilledValue = timestampPartitionKey(columnValue, hiveStorageTimeZone, name);
+                else if (type.equals(TIMESTAMP) || type.equals(TIMESTAMP_WITH_TIME_ZONE)) {
+                    prefilledValue = timestampPartitionKey(columnValue, hiveStorageTimeZone, name, type.equals(TIMESTAMP_WITH_TIME_ZONE));
                 }
                 else if (isShortDecimal(type)) {
                     prefilledValue = shortDecimalPartitionKey(columnValue, (DecimalType) type, name);
                 }
                 else if (isLongDecimal(type)) {
                     prefilledValue = longDecimalPartitionKey(columnValue, (DecimalType) type, name);
+                }
+                else if (type.equals(VarbinaryType.VARBINARY)) {
+                    prefilledValue = utf8Slice(columnValue);
                 }
                 else {
                     throw new PrestoException(NOT_SUPPORTED, format("Unsupported column type %s for prefilled column: %s", type.getDisplayName(), name));
@@ -243,7 +251,7 @@ public class HivePageSource
                 Block[] adaptedBlocks = new Block[dataPage.getChannelCount()];
                 for (int i = 0; i < adaptedBlocks.length; i++) {
                     Block block = dataPage.getBlock(i);
-                    if (block instanceof LazyBlock && !((LazyBlock) block).isLoaded()) {
+                    if (!block.isLoaded()) {
                         adaptedBlocks[i] = new LazyBlock(rowsToKeep.size(), new RowFilterLazyBlockLoader(dataPage.getBlock(i), rowsToKeep));
                     }
                     else {
@@ -332,18 +340,18 @@ public class HivePageSource
 
     private static Function<Block, Block> createCoercer(TypeManager typeManager, HiveType fromHiveType, HiveType toHiveType)
     {
-        Type fromType = typeManager.getType(fromHiveType.getTypeSignature());
-        Type toType = typeManager.getType(toHiveType.getTypeSignature());
+        Type fromType = fromHiveType.getType(typeManager);
+        Type toType = toHiveType.getType(typeManager);
         if (toType instanceof VarcharType && (fromHiveType.equals(HIVE_BYTE) || fromHiveType.equals(HIVE_SHORT) || fromHiveType.equals(HIVE_INT) || fromHiveType.equals(HIVE_LONG))) {
             return new IntegerNumberToVarcharCoercer<>(fromType, (VarcharType) toType);
         }
         if (fromType instanceof VarcharType && (toHiveType.equals(HIVE_BYTE) || toHiveType.equals(HIVE_SHORT) || toHiveType.equals(HIVE_INT) || toHiveType.equals(HIVE_LONG))) {
             return new VarcharToIntegerNumberCoercer<>((VarcharType) fromType, toType);
         }
-        if (fromHiveType.equals(HIVE_BYTE) && toHiveType.equals(HIVE_SHORT) || toHiveType.equals(HIVE_INT) || toHiveType.equals(HIVE_LONG)) {
+        if (fromHiveType.equals(HIVE_BYTE) && (toHiveType.equals(HIVE_SHORT) || toHiveType.equals(HIVE_INT) || toHiveType.equals(HIVE_LONG))) {
             return new IntegerNumberUpscaleCoercer<>(fromType, toType);
         }
-        if (fromHiveType.equals(HIVE_SHORT) && toHiveType.equals(HIVE_INT) || toHiveType.equals(HIVE_LONG)) {
+        if (fromHiveType.equals(HIVE_SHORT) && (toHiveType.equals(HIVE_INT) || toHiveType.equals(HIVE_LONG))) {
             return new IntegerNumberUpscaleCoercer<>(fromType, toType);
         }
         if (fromHiveType.equals(HIVE_INT) && toHiveType.equals(HIVE_LONG)) {
@@ -523,9 +531,7 @@ public class HivePageSource
         @Override
         public void load(LazyBlock lazyBlock)
         {
-            if (block == null) {
-                return;
-            }
+            checkState(block != null, "Already loaded");
 
             lazyBlock.setBlock(coercer.apply(block.getLoadedBlock()));
 
@@ -549,9 +555,7 @@ public class HivePageSource
         @Override
         public void load(LazyBlock lazyBlock)
         {
-            if (block == null) {
-                return;
-            }
+            checkState(block != null, "Already loaded");
 
             lazyBlock.setBlock(block.getPositions(rowsToKeep.elements(), 0, rowsToKeep.size()));
 
@@ -572,15 +576,17 @@ public class HivePageSource
 
     public static class BucketAdapter
     {
-        public final int[] bucketColumns;
-        public final int bucketToKeep;
-        public final int tableBucketCount;
-        public final int partitionBucketCount; // for sanity check only
+        private final int[] bucketColumns;
+        private final BucketingVersion bucketingVersion;
+        private final int bucketToKeep;
+        private final int tableBucketCount;
+        private final int partitionBucketCount; // for sanity check only
         private final List<TypeInfo> typeInfoList;
 
         public BucketAdapter(BucketAdaptation bucketAdaptation)
         {
             this.bucketColumns = bucketAdaptation.getBucketColumnIndices();
+            this.bucketingVersion = bucketAdaptation.getBucketingVersion();
             this.bucketToKeep = bucketAdaptation.getBucketToKeep();
             this.typeInfoList = bucketAdaptation.getBucketColumnHiveTypes().stream()
                     .map(HiveType::getTypeInfo)
@@ -594,7 +600,7 @@ public class HivePageSource
             IntArrayList ids = new IntArrayList(page.getPositionCount());
             Page bucketColumnsPage = extractColumns(page, bucketColumns);
             for (int position = 0; position < page.getPositionCount(); position++) {
-                int bucket = getHiveBucket(tableBucketCount, typeInfoList, bucketColumnsPage, position);
+                int bucket = getHiveBucket(bucketingVersion, tableBucketCount, typeInfoList, bucketColumnsPage, position);
                 if ((bucket - bucketToKeep) % partitionBucketCount != 0) {
                     throw new PrestoException(HIVE_INVALID_BUCKET_FILES, format(
                             "A row that is supposed to be in bucket %s is encountered. Only rows in bucket %s (modulo %s) are expected",

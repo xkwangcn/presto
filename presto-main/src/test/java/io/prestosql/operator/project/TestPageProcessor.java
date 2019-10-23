@@ -20,6 +20,7 @@ import io.airlift.testing.TestingTicker;
 import io.airlift.units.Duration;
 import io.prestosql.memory.context.AggregatedMemoryContext;
 import io.prestosql.memory.context.LocalMemoryContext;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.operator.CompletedWork;
 import io.prestosql.operator.DriverYieldSignal;
 import io.prestosql.operator.Work;
@@ -52,7 +53,6 @@ import static io.prestosql.block.BlockAssertions.createStringsBlock;
 import static io.prestosql.execution.executor.PrioritizedSplitRunner.SPLIT_RUN_QUANTA;
 import static io.prestosql.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
-import static io.prestosql.metadata.Signature.internalOperator;
 import static io.prestosql.operator.PageAssertions.assertPageEquals;
 import static io.prestosql.operator.project.PageProcessor.MAX_BATCH_SIZE;
 import static io.prestosql.operator.project.PageProcessor.MAX_PAGE_SIZE_IN_BYTES;
@@ -150,6 +150,37 @@ public class TestPageProcessor
         List<Optional<Page>> outputPages = ImmutableList.copyOf(output);
         assertEquals(outputPages.size(), 1);
         assertPageEquals(ImmutableList.of(BIGINT), outputPages.get(0).orElse(null), new Page(createLongSequenceBlock(0, 100)));
+    }
+
+    @Test
+    public void testSelectAllFilterLazyBlock()
+    {
+        PageProcessor pageProcessor = new PageProcessor(Optional.of(new SelectAllFilter()), ImmutableList.of(new InputPageProjection(0, BIGINT), new InputPageProjection(1, BIGINT)), OptionalInt.of(100));
+
+        LazyBlock inputFilterBlock = lazyWrapper(createLongSequenceBlock(0, 100));
+        LazyBlock inputProjectionBlock = lazyWrapper(createLongSequenceBlock(100, 200));
+        Page inputPage = new Page(inputFilterBlock, inputProjectionBlock);
+
+        Iterator<Optional<Page>> output = processAndAssertRetainedPageSize(pageProcessor, new DriverYieldSignal(), newSimpleAggregatedMemoryContext(), inputPage, true);
+        List<Optional<Page>> outputPages = ImmutableList.copyOf(output);
+
+        assertTrue(inputFilterBlock.isLoaded());
+        assertFalse(inputProjectionBlock.isLoaded());
+        assertEquals(outputPages.size(), 1);
+
+        inputFilterBlock = lazyWrapper(createLongSequenceBlock(0, 200));
+        inputProjectionBlock = lazyWrapper(createLongSequenceBlock(100, 300));
+        inputPage = new Page(inputFilterBlock, inputProjectionBlock);
+
+        // batch size should increase because filter block was materialized
+        output = processAndAssertRetainedPageSize(pageProcessor, new DriverYieldSignal(), newSimpleAggregatedMemoryContext(), inputPage, true);
+        outputPages = ImmutableList.copyOf(output);
+
+        assertEquals(outputPages.size(), 1);
+        assertTrue(inputFilterBlock.isLoaded());
+        assertFalse(inputProjectionBlock.isLoaded());
+        assertPageEquals(ImmutableList.of(BIGINT, BIGINT), outputPages.get(0).get(), new Page(createLongSequenceBlock(0, 200), createLongSequenceBlock(100, 300)));
+        assertTrue(inputProjectionBlock.isLoaded());
     }
 
     @Test
@@ -390,14 +421,15 @@ public class TestPageProcessor
     @Test
     public void testExpressionProfiler()
     {
+        Metadata metadata = createTestMetadataManager();
         CallExpression add10Expression = call(
-                internalOperator(ADD, BIGINT.getTypeSignature(), ImmutableList.of(BIGINT.getTypeSignature(), BIGINT.getTypeSignature())),
+                metadata.resolveOperator(ADD, ImmutableList.of(BIGINT, BIGINT)),
                 BIGINT,
                 field(0, BIGINT),
                 constant(10L, BIGINT));
 
         TestingTicker testingTicker = new TestingTicker();
-        PageFunctionCompiler functionCompiler = new PageFunctionCompiler(createTestMetadataManager(), 0);
+        PageFunctionCompiler functionCompiler = new PageFunctionCompiler(metadata, 0);
         Supplier<PageProjection> projectionSupplier = functionCompiler.compileProjection(add10Expression, Optional.empty());
         PageProjection projection = projectionSupplier.get();
         Page page = new Page(createLongSequenceBlock(1, 11));
@@ -500,13 +532,29 @@ public class TestPageProcessor
 
     private Iterator<Optional<Page>> processAndAssertRetainedPageSize(PageProcessor pageProcessor, DriverYieldSignal yieldSignal, AggregatedMemoryContext memoryContext, Page inputPage)
     {
+        return processAndAssertRetainedPageSize(pageProcessor, yieldSignal, memoryContext, inputPage, false);
+    }
+
+    private Iterator<Optional<Page>> processAndAssertRetainedPageSize(
+            PageProcessor pageProcessor,
+            DriverYieldSignal yieldSignal,
+            AggregatedMemoryContext memoryContext,
+            Page inputPage,
+            boolean avoidPageMaterialization)
+    {
         Iterator<Optional<Page>> output = pageProcessor.process(
                 SESSION,
                 yieldSignal,
                 memoryContext.newLocalMemoryContext(PageProcessor.class.getSimpleName()),
-                inputPage);
+                inputPage,
+                avoidPageMaterialization);
         assertEquals(memoryContext.getBytes(), 0);
         return output;
+    }
+
+    private static LazyBlock lazyWrapper(Block block)
+    {
+        return new LazyBlock(block.getPositionCount(), lazyBlock -> lazyBlock.setBlock(block.getLoadedBlock()));
     }
 
     private static class InvocationCountPageProjection

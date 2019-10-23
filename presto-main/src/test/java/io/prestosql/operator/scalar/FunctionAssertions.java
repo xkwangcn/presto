@@ -24,7 +24,6 @@ import io.airlift.units.DataSize;
 import io.prestosql.Session;
 import io.prestosql.connector.CatalogName;
 import io.prestosql.execution.Lifespan;
-import io.prestosql.execution.warnings.WarningCollector;
 import io.prestosql.metadata.FunctionListBuilder;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Split;
@@ -53,33 +52,28 @@ import io.prestosql.spi.connector.FixedPageSource;
 import io.prestosql.spi.connector.InMemoryRecordSet;
 import io.prestosql.spi.connector.RecordPageSource;
 import io.prestosql.spi.connector.RecordSet;
+import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.predicate.Utils;
 import io.prestosql.spi.type.RowType;
 import io.prestosql.spi.type.TimeZoneKey;
 import io.prestosql.spi.type.Type;
 import io.prestosql.split.PageSourceProvider;
-import io.prestosql.sql.analyzer.ExpressionAnalysis;
 import io.prestosql.sql.analyzer.FeaturesConfig;
-import io.prestosql.sql.analyzer.SemanticErrorCode;
 import io.prestosql.sql.gen.ExpressionCompiler;
 import io.prestosql.sql.parser.SqlParser;
 import io.prestosql.sql.planner.ExpressionInterpreter;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.TypeProvider;
+import io.prestosql.sql.planner.iterative.rule.CanonicalizeExpressionRewriter;
 import io.prestosql.sql.planner.plan.PlanNodeId;
 import io.prestosql.sql.relational.RowExpression;
-import io.prestosql.sql.tree.Cast;
 import io.prestosql.sql.tree.DefaultTraversalVisitor;
-import io.prestosql.sql.tree.DereferenceExpression;
 import io.prestosql.sql.tree.Expression;
-import io.prestosql.sql.tree.ExpressionRewriter;
-import io.prestosql.sql.tree.ExpressionTreeRewriter;
 import io.prestosql.sql.tree.NodeRef;
 import io.prestosql.sql.tree.SymbolReference;
 import io.prestosql.testing.LocalQueryRunner;
 import io.prestosql.testing.MaterializedResult;
-import io.prestosql.type.TypeRegistry;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.openjdk.jol.info.ClassLayout;
@@ -126,16 +120,13 @@ import static io.prestosql.spi.type.IntegerType.INTEGER;
 import static io.prestosql.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
 import static io.prestosql.spi.type.VarbinaryType.VARBINARY;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
-import static io.prestosql.sql.ExpressionUtils.rewriteIdentifiersToSymbolReferences;
+import static io.prestosql.sql.ExpressionTestUtils.planExpression;
 import static io.prestosql.sql.ParsingUtil.createParsingOptions;
-import static io.prestosql.sql.analyzer.ExpressionAnalyzer.analyzeExpressions;
-import static io.prestosql.sql.planner.iterative.rule.CanonicalizeExpressionRewriter.canonicalizeExpression;
 import static io.prestosql.sql.relational.Expressions.constant;
 import static io.prestosql.sql.relational.SqlToRowExpressionTranslator.translate;
 import static io.prestosql.testing.TestingHandles.TEST_TABLE_HANDLE;
 import static io.prestosql.testing.TestingTaskContext.createTaskContext;
 import static io.prestosql.testing.assertions.PrestoExceptionAssert.assertPrestoExceptionThrownBy;
-import static io.prestosql.testing.assertions.SemanticExceptionAssert.assertSemanticExceptionThrownBy;
 import static io.prestosql.type.UnknownType.UNKNOWN;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -231,14 +222,14 @@ public final class FunctionAssertions
         typeAnalyzer = new TypeAnalyzer(SQL_PARSER, metadata);
     }
 
-    public TypeRegistry getTypeRegistry()
-    {
-        return runner.getTypeManager();
-    }
-
     public Metadata getMetadata()
     {
         return metadata;
+    }
+
+    public void addType(Type type)
+    {
+        runner.addType(type);
     }
 
     public FunctionAssertions addFunctions(List<? extends SqlFunction> functionInfos)
@@ -333,19 +324,6 @@ public final class FunctionAssertions
     public void assertInvalidFunction(String projection, String message)
     {
         assertInvalidFunction(projection, INVALID_FUNCTION_ARGUMENT, message);
-    }
-
-    public void assertInvalidFunction(String projection, SemanticErrorCode expectedErrorCode)
-    {
-        assertSemanticExceptionThrownBy(() -> evaluateInvalid(projection))
-                .hasErrorCode(expectedErrorCode);
-    }
-
-    public void assertInvalidFunction(String projection, SemanticErrorCode expectedErrorCode, String message)
-    {
-        assertSemanticExceptionThrownBy(() -> evaluateInvalid(projection))
-                .hasErrorCode(expectedErrorCode)
-                .hasMessage(message);
     }
 
     public void assertInvalidFunction(String projection, ErrorCodeSupplier expectedErrorCode)
@@ -660,59 +638,8 @@ public final class FunctionAssertions
     public static Expression createExpression(Session session, String expression, Metadata metadata, TypeProvider symbolTypes)
     {
         Expression parsedExpression = SQL_PARSER.createExpression(expression, createParsingOptions(session));
-
-        parsedExpression = rewriteIdentifiersToSymbolReferences(parsedExpression);
-
-        final ExpressionAnalysis analysis = analyzeExpressions(
-                session,
-                metadata,
-                SQL_PARSER,
-                symbolTypes,
-                ImmutableList.of(parsedExpression),
-                ImmutableList.of(),
-                WarningCollector.NOOP,
-                false);
-
-        Expression rewrittenExpression = ExpressionTreeRewriter.rewriteWith(new ExpressionRewriter<Void>()
-        {
-            @Override
-            public Expression rewriteExpression(Expression node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
-            {
-                Expression rewrittenExpression = treeRewriter.defaultRewrite(node, context);
-
-                // cast expression if coercion is registered
-                Type coercion = analysis.getCoercion(node);
-                if (coercion != null) {
-                    rewrittenExpression = new Cast(
-                            rewrittenExpression,
-                            coercion.getTypeSignature().toString(),
-                            false,
-                            analysis.isTypeOnlyCoercion(node));
-                }
-
-                return rewrittenExpression;
-            }
-
-            @Override
-            public Expression rewriteDereferenceExpression(DereferenceExpression node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
-            {
-                if (analysis.isColumnReference(node)) {
-                    return rewriteExpression(node, context, treeRewriter);
-                }
-
-                Expression rewrittenExpression = treeRewriter.defaultRewrite(node, context);
-
-                // cast expression if coercion is registered
-                Type coercion = analysis.getCoercion(node);
-                if (coercion != null) {
-                    rewrittenExpression = new Cast(rewrittenExpression, coercion.getTypeSignature().toString());
-                }
-
-                return rewrittenExpression;
-            }
-        }, parsedExpression);
-
-        return canonicalizeExpression(rewrittenExpression);
+        Expression rewrittenExpression = planExpression(metadata, session, symbolTypes, parsedExpression);
+        return CanonicalizeExpressionRewriter.rewrite(rewrittenExpression, session, metadata, new TypeAnalyzer(SQL_PARSER, metadata), symbolTypes);
     }
 
     private static boolean executeFilterWithNoInputColumns(OperatorFactory operatorFactory, Session session)
@@ -875,6 +802,7 @@ public final class FunctionAssertions
                     pageProcessor,
                     TEST_TABLE_HANDLE,
                     ImmutableList.of(),
+                    null,
                     ImmutableList.of(projection.getType()),
                     new DataSize(0, BYTE),
                     0);
@@ -889,7 +817,7 @@ public final class FunctionAssertions
 
     private RowExpression toRowExpression(Expression projection, Map<NodeRef<Expression>, Type> expressionTypes, Map<Symbol, Integer> layout)
     {
-        return translate(projection, SCALAR, expressionTypes, layout, metadata.getFunctionRegistry(), metadata.getTypeManager(), session, false);
+        return translate(projection, SCALAR, expressionTypes, layout, metadata, session, false);
     }
 
     private static Page getAtMostOnePage(Operator operator, Page sourcePage)
@@ -949,7 +877,7 @@ public final class FunctionAssertions
             implements PageSourceProvider
     {
         @Override
-        public ConnectorPageSource createPageSource(Session session, Split split, TableHandle table, List<ColumnHandle> columns)
+        public ConnectorPageSource createPageSource(Session session, Split split, TableHandle table, List<ColumnHandle> columns, Supplier<TupleDomain<ColumnHandle>> dynamicFilter)
         {
             assertInstanceOf(split.getConnectorSplit(), FunctionAssertions.TestSplit.class);
             FunctionAssertions.TestSplit testSplit = (FunctionAssertions.TestSplit) split.getConnectorSplit();

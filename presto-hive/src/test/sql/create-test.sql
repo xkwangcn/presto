@@ -63,6 +63,7 @@ COMMENT 'Presto test bucketed table'
 PARTITIONED BY (ds STRING)
 CLUSTERED BY (t_string, t_int) INTO 32 BUCKETS
 STORED AS RCFILE
+TBLPROPERTIES ('bucketing_version'='1') -- TODO https://github.com/prestosql/presto/issues/538 remove
 ;
 
 CREATE TABLE presto_test_bucketed_by_bigint_boolean (
@@ -79,6 +80,7 @@ COMMENT 'Presto test bucketed table'
 PARTITIONED BY (ds STRING)
 CLUSTERED BY (t_bigint, t_boolean) INTO 32 BUCKETS
 STORED AS RCFILE
+TBLPROPERTIES ('bucketing_version'='1') -- TODO https://github.com/prestosql/presto/issues/538 remove
 ;
 
 CREATE TABLE presto_test_bucketed_by_double_float (
@@ -95,6 +97,7 @@ COMMENT 'Presto test bucketed table'
 PARTITIONED BY (ds STRING)
 CLUSTERED BY (t_double, t_float) INTO 32 BUCKETS
 STORED AS RCFILE
+TBLPROPERTIES ('bucketing_version'='1') -- TODO https://github.com/prestosql/presto/issues/538 remove
 ;
 
 CREATE TABLE presto_test_partition_schema_change (
@@ -237,7 +240,7 @@ ANALYZE TABLE presto_test_bucketed_by_string_int PARTITION(ds) COMPUTE STATISTIC
 ANALYZE TABLE presto_test_bucketed_by_string_int PARTITION(ds) COMPUTE STATISTICS FOR COLUMNS;
 
 
-CREATE TABLE presto_test_types_textfile (
+CREATE TABLE presto_test_types_orc (
   t_string STRING
 , t_tinyint TINYINT
 , t_smallint SMALLINT
@@ -257,10 +260,10 @@ CREATE TABLE presto_test_types_textfile (
 , t_struct STRUCT<s_string: STRING, s_double:DOUBLE>
 , t_complex MAP<INT, ARRAY<STRUCT<s_string: STRING, s_double:DOUBLE>>>
 )
-STORED AS TEXTFILE
+STORED AS ORC
 ;
 
-INSERT INTO TABLE presto_test_types_textfile
+INSERT INTO TABLE presto_test_types_orc
 SELECT
   CASE n % 19 WHEN 0 THEN NULL WHEN 1 THEN '' ELSE 'test' END
 , 1 + n
@@ -278,59 +281,38 @@ SELECT
 , CASE WHEN n % 27 = 0 THEN NULL ELSE map('test key', 'test value') END
 , CASE WHEN n % 29 = 0 THEN NULL ELSE array('abc', 'xyz', 'data') END
 , CASE WHEN n % 31 = 0 THEN NULL ELSE
-     array(named_struct('s_string', 'test abc', 's_double', 0.1),
-           named_struct('s_string' , 'test xyz', 's_double', 0.2)) END
+     array(named_struct('s_string', 'test abc', 's_double', 1e-1),
+           named_struct('s_string' , 'test xyz', 's_double', 2e-1)) END
 , CASE WHEN n % 31 = 0 THEN NULL ELSE
-     named_struct('s_string', 'test abc', 's_double', 0.1) END
+     named_struct('s_string', 'test abc', 's_double', 1e-1) END
 , CASE WHEN n % 33 = 0 THEN NULL ELSE
-     map(1, array(named_struct('s_string', 'test abc', 's_double', 0.1),
-                  named_struct('s_string' , 'test xyz', 's_double', 0.2))) END
+     map(1, array(named_struct('s_string', 'test abc', 's_double', 1e-1),
+                  named_struct('s_string' , 'test xyz', 's_double', 2e-1))) END
 FROM presto_test_sequence
 LIMIT 100
 ;
 
+CREATE TABLE presto_test_types_sequencefile
+STORED AS SEQUENCEFILE
+AS SELECT * FROM presto_test_types_orc;
 
-CREATE TABLE presto_test_types_sequencefile LIKE presto_test_types_textfile;
-ALTER TABLE presto_test_types_sequencefile SET FILEFORMAT SEQUENCEFILE;
+CREATE TABLE presto_test_types_rctext
+ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe'
+STORED AS RCFILE
+AS SELECT * FROM presto_test_types_orc;
 
-INSERT INTO TABLE presto_test_types_sequencefile
-SELECT * FROM presto_test_types_textfile
-;
+CREATE TABLE presto_test_types_rcbinary
+ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.columnar.LazyBinaryColumnarSerDe'
+STORED AS RCFILE
+AS SELECT * FROM presto_test_types_orc;
 
+CREATE TABLE presto_test_types_textfile
+STORED AS TEXTFILE
+AS SELECT * FROM presto_test_types_orc;
 
-CREATE TABLE presto_test_types_rctext LIKE presto_test_types_textfile;
-ALTER TABLE presto_test_types_rctext SET FILEFORMAT RCFILE;
-ALTER TABLE presto_test_types_rctext SET SERDE 'org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe';
-
-INSERT INTO TABLE presto_test_types_rctext
-SELECT * FROM presto_test_types_textfile
-;
-
-
-CREATE TABLE presto_test_types_rcbinary LIKE presto_test_types_textfile;
-ALTER TABLE presto_test_types_rcbinary SET FILEFORMAT RCFILE;
-ALTER TABLE presto_test_types_rcbinary SET SERDE 'org.apache.hadoop.hive.serde2.columnar.LazyBinaryColumnarSerDe';
-
-INSERT INTO TABLE presto_test_types_rcbinary
-SELECT * FROM presto_test_types_textfile
-;
-
-
-CREATE TABLE presto_test_types_orc LIKE presto_test_types_textfile;
-ALTER TABLE presto_test_types_orc SET FILEFORMAT ORC;
-
-INSERT INTO TABLE presto_test_types_orc
-SELECT * FROM presto_test_types_textfile
-;
-
-
-CREATE TABLE presto_test_types_parquet LIKE presto_test_types_textfile;
-ALTER TABLE presto_test_types_parquet SET FILEFORMAT PARQUET;
-
-INSERT INTO TABLE presto_test_types_parquet
-SELECT * FROM presto_test_types_textfile
-;
-
+CREATE TABLE presto_test_types_parquet
+STORED AS PARQUET
+AS SELECT * FROM presto_test_types_orc;
 
 ALTER TABLE presto_test_types_textfile ADD COLUMNS (new_column INT);
 ALTER TABLE presto_test_types_sequencefile ADD COLUMNS (new_column INT);

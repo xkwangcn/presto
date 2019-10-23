@@ -89,7 +89,6 @@ public abstract class AbstractTestQueryFramework
 
     @AfterClass(alwaysRun = true)
     public void close()
-            throws Exception
     {
         closeAllRuntimeException(queryRunner, h2QueryRunner);
         queryRunner = null;
@@ -147,6 +146,11 @@ public abstract class AbstractTestQueryFramework
     {
         checkArgument(queryRunner instanceof DistributedQueryRunner, "pattern assertion is only supported for DistributedQueryRunner");
         QueryAssertions.assertQuery(queryRunner, session, actual, h2QueryRunner, expected, false, false, planAssertion);
+    }
+
+    protected void assertQueryEventually(Session session, @Language("SQL") String actual, @Language("SQL") String expected, Duration timeout)
+    {
+        QueryAssertions.assertQueryEventually(queryRunner, session, actual, h2QueryRunner, expected, false, false, Optional.empty(), timeout);
     }
 
     protected void assertQueryOrdered(@Language("SQL") String sql)
@@ -318,7 +322,7 @@ public abstract class AbstractTestQueryFramework
 
     protected String formatSqlText(String sql)
     {
-        return formatSql(sqlParser.createStatement(sql, createParsingOptions(queryRunner.getDefaultSession())), Optional.empty());
+        return formatSql(sqlParser.createStatement(sql, createParsingOptions(queryRunner.getDefaultSession())));
     }
 
     //TODO: should WarningCollector be added?
@@ -352,7 +356,6 @@ public abstract class AbstractTestQueryFramework
         List<PlanOptimizer> optimizers = new PlanOptimizers(
                 metadata,
                 new TypeAnalyzer(sqlParser, metadata),
-                featuresConfig,
                 new TaskManagerConfig(),
                 forceSingleNode,
                 new MBeanExporter(new TestingMBeanServer()),

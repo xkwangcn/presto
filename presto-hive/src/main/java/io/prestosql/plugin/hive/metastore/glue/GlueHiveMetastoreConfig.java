@@ -30,6 +30,9 @@ public class GlueHiveMetastoreConfig
     private Optional<String> iamRole = Optional.empty();
     private Optional<String> awsAccessKey = Optional.empty();
     private Optional<String> awsSecretKey = Optional.empty();
+    private Optional<String> awsCredentialsProvider = Optional.empty();
+    private boolean useInstanceCredentials;
+    private Optional<String> catalogId = Optional.empty();
 
     public Optional<String> getGlueRegion()
     {
@@ -121,6 +124,43 @@ public class GlueHiveMetastoreConfig
     public GlueHiveMetastoreConfig setAwsSecretKey(String awsSecretKey)
     {
         this.awsSecretKey = Optional.ofNullable(awsSecretKey);
+        return this;
+    }
+
+    public Optional<String> getCatalogId()
+    {
+        return catalogId;
+    }
+
+    @Config("hive.metastore.glue.catalogid")
+    @ConfigDescription("Hive Glue metastore catalog id")
+    public GlueHiveMetastoreConfig setCatalogId(String catalogId)
+    {
+        this.catalogId = Optional.ofNullable(catalogId);
+        return this;
+    }
+
+    public boolean isUseInstanceCredentials()
+    {
+        return useInstanceCredentials;
+    }
+
+    @Config("hive.metastore.glue.use-instance-credentials")
+    public GlueHiveMetastoreConfig setUseInstanceCredentials(boolean useInstanceCredentials)
+    {
+        this.useInstanceCredentials = useInstanceCredentials;
+        return this;
+    }
+
+    public Optional<String> getAwsCredentialsProvider()
+    {
+        return awsCredentialsProvider;
+    }
+
+    @Config("hive.metastore.glue.aws-credentials-provider")
+    public GlueHiveMetastoreConfig setAwsCredentialsProvider(String awsCredentialsProvider)
+    {
+        this.awsCredentialsProvider = Optional.ofNullable(awsCredentialsProvider);
         return this;
     }
 }

@@ -37,7 +37,7 @@ import java.util.Queue;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.base.Verify.verify;
+import static com.google.common.base.Verify.verifyNotNull;
 import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.prestosql.spi.StandardErrorCode.INVALID_RESOURCE_GROUP;
 import static java.lang.String.format;
@@ -63,7 +63,7 @@ public abstract class AbstractResourceConfigurationManager
             List<ResourceGroupSpec> subGroups = group.getSubGroups();
             groups.addAll(subGroups);
             if (group.getSoftCpuLimit().isPresent() || group.getHardCpuLimit().isPresent()) {
-                checkArgument(managerSpec.getCpuQuotaPeriod().isPresent(), "cpuQuotaPeriod must be specified to use cpu limits on group: %s", group.getName());
+                checkArgument(managerSpec.getCpuQuotaPeriod().isPresent(), "cpuQuotaPeriod must be specified to use CPU limits on group: %s", group.getName());
             }
             if (group.getSoftCpuLimit().isPresent()) {
                 checkArgument(group.getHardCpuLimit().isPresent(), "Must specify hard CPU limit in addition to soft limit");
@@ -187,7 +187,7 @@ public abstract class AbstractResourceConfigurationManager
             candidates = match.getSubGroups();
         }
 
-        verify(match != null, "match is null");
+        verifyNotNull(match, "match is null");
         return match;
     }
 
@@ -213,7 +213,7 @@ public abstract class AbstractResourceConfigurationManager
         match.getHardCpuLimit().ifPresent(group::setHardCpuLimit);
         if (match.getSoftCpuLimit().isPresent() || match.getHardCpuLimit().isPresent()) {
             // This will never throw an exception if the validateRootGroups method succeeds
-            checkState(getCpuQuotaPeriod().isPresent(), "Must specify hard CPU limit in addition to soft limit");
+            checkState(getCpuQuotaPeriod().isPresent(), "cpuQuotaPeriod must be specified to use CPU limits on group: %s", group.getId());
             Duration limit;
             if (match.getHardCpuLimit().isPresent()) {
                 limit = match.getHardCpuLimit().get();

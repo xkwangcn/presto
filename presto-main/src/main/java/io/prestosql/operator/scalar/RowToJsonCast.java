@@ -20,14 +20,13 @@ import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 import io.prestosql.annotation.UsedByGeneratedCode;
 import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.SqlOperator;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.function.OperatorType;
-import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.util.JsonUtil.JsonGeneratorWriter;
 
 import java.io.IOException;
@@ -42,7 +41,7 @@ import static io.prestosql.operator.scalar.JsonOperators.JSON_FACTORY;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static io.prestosql.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.type.JsonType.JSON;
 import static io.prestosql.util.Failures.checkCondition;
 import static io.prestosql.util.JsonUtil.JsonGeneratorWriter.createJsonGeneratorWriter;
 import static io.prestosql.util.JsonUtil.canCastToJson;
@@ -60,12 +59,12 @@ public class RowToJsonCast
         super(OperatorType.CAST,
                 ImmutableList.of(withVariadicBound("T", "row")),
                 ImmutableList.of(),
-                parseTypeSignature(StandardTypes.JSON),
-                ImmutableList.of(parseTypeSignature("T")));
+                JSON.getTypeSignature(),
+                ImmutableList.of(new TypeSignature("T")));
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         checkArgument(arity == 1, "Expected arity to be 1");
         Type type = boundVariables.getTypeVariable("T");

@@ -23,6 +23,7 @@ import io.prestosql.spi.connector.ConnectorSplit;
 import io.prestosql.spi.connector.ConnectorSplitSource;
 import org.testng.annotations.Test;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -138,7 +139,7 @@ public class TestHiveSplitSource
     public void testReaderWaitsForSplits()
             throws Exception
     {
-        final HiveSplitSource hiveSplitSource = HiveSplitSource.allAtOnce(
+        HiveSplitSource hiveSplitSource = HiveSplitSource.allAtOnce(
                 SESSION,
                 "database",
                 "table",
@@ -150,10 +151,10 @@ public class TestHiveSplitSource
                 Executors.newFixedThreadPool(5),
                 new CounterStat());
 
-        final SettableFuture<ConnectorSplit> splits = SettableFuture.create();
+        SettableFuture<ConnectorSplit> splits = SettableFuture.create();
 
         // create a thread that will get a split
-        final CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch started = new CountDownLatch(1);
         Thread getterThread = new Thread(new Runnable()
         {
             @Override
@@ -234,7 +235,7 @@ public class TestHiveSplitSource
     @Test
     public void testEmptyBucket()
     {
-        final HiveSplitSource hiveSplitSource = HiveSplitSource.bucketed(
+        HiveSplitSource hiveSplitSource = HiveSplitSource.bucketed(
                 SESSION,
                 "database",
                 "table",
@@ -298,6 +299,7 @@ public class TestHiveSplitSource
                     0,
                     100,
                     100,
+                    Instant.now().toEpochMilli(),
                     properties("id", String.valueOf(id)),
                     ImmutableList.of(),
                     ImmutableList.of(new InternalHiveBlock(0, 100, ImmutableList.of())),

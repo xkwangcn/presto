@@ -14,17 +14,22 @@
 package io.prestosql.plugin.hive.metastore.thrift;
 
 import com.google.common.net.HostAndPort;
+import io.prestosql.plugin.hive.authentication.HiveAuthenticationConfig;
+import io.prestosql.plugin.hive.authentication.HiveAuthenticationConfig.HiveMetastoreAuthenticationType;
 import org.apache.thrift.TException;
 
+import javax.annotation.Nullable;
 import javax.inject.Inject;
 
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static io.prestosql.plugin.hive.metastore.thrift.StaticMetastoreConfig.HIVE_METASTORE_USERNAME;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 
@@ -32,16 +37,22 @@ public class StaticMetastoreLocator
         implements MetastoreLocator
 {
     private final List<HostAndPort> addresses;
-    private final HiveMetastoreClientFactory clientFactory;
+    private final ThriftMetastoreClientFactory clientFactory;
     private final String metastoreUsername;
 
     @Inject
-    public StaticMetastoreLocator(StaticMetastoreConfig config, HiveMetastoreClientFactory clientFactory)
+    public StaticMetastoreLocator(StaticMetastoreConfig config, HiveAuthenticationConfig hiveAuthenticationConfig, ThriftMetastoreClientFactory clientFactory)
     {
         this(config.getMetastoreUris(), config.getMetastoreUsername(), clientFactory);
+
+        checkArgument(
+                isNullOrEmpty(metastoreUsername) || hiveAuthenticationConfig.getHiveMetastoreAuthenticationType() == HiveMetastoreAuthenticationType.NONE,
+                "%s cannot be used together with %s authentication",
+                HIVE_METASTORE_USERNAME,
+                hiveAuthenticationConfig.getHiveMetastoreAuthenticationType());
     }
 
-    public StaticMetastoreLocator(List<URI> metastoreUris, String metastoreUsername, HiveMetastoreClientFactory clientFactory)
+    public StaticMetastoreLocator(List<URI> metastoreUris, @Nullable String metastoreUsername, ThriftMetastoreClientFactory clientFactory)
     {
         requireNonNull(metastoreUris, "metastoreUris is null");
         checkArgument(!metastoreUris.isEmpty(), "metastoreUris must specify at least one URI");
@@ -62,7 +73,7 @@ public class StaticMetastoreLocator
      * connection succeeds or there are no more fallback metastores.
      */
     @Override
-    public ThriftMetastoreClient createMetastoreClient()
+    public ThriftMetastoreClient createMetastoreClient(Optional<String> delegationToken)
             throws TException
     {
         List<HostAndPort> metastores = new ArrayList<>(addresses);
@@ -71,7 +82,7 @@ public class StaticMetastoreLocator
         TException lastException = null;
         for (HostAndPort metastore : metastores) {
             try {
-                ThriftMetastoreClient client = clientFactory.create(metastore);
+                ThriftMetastoreClient client = clientFactory.create(metastore, delegationToken);
                 if (!isNullOrEmpty(metastoreUsername)) {
                     client.setUGI(metastoreUsername);
                 }

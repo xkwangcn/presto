@@ -110,7 +110,6 @@ public class KafkaAvroSmokeTest
         try (DataFileWriter<GenericRecord> dataFileWriter = new DataFileWriter<>(new GenericDatumWriter<>(schema))) {
             dataFileWriter.create(schema, outputStream);
             dataFileWriter.append(record);
-            dataFileWriter.close();
         }
         catch (IOException e) {
             throw new UncheckedIOException("Failed to convert to Avro.", e);
@@ -118,7 +117,7 @@ public class KafkaAvroSmokeTest
         return outputStream.toByteArray();
     }
 
-    @Test(groups = {KAFKA})
+    @Test(groups = KAFKA)
     @Requires(AllDataTypesAvroTable.class)
     public void testSelectPrimitiveDataType()
             throws SQLException
@@ -141,7 +140,7 @@ public class KafkaAvroSmokeTest
         }
     }
 
-    @Test(groups = {KAFKA})
+    @Test(groups = KAFKA)
     @Requires(NullDataAvroTable.class)
     public void testNullType()
             throws SQLException
@@ -167,7 +166,7 @@ public class KafkaAvroSmokeTest
         }
     }
 
-    @Test(groups = {KAFKA})
+    @Test(groups = KAFKA)
     @Requires(StructuralDataTypeTable.class)
     public void testSelectStructuralDataType()
             throws SQLException

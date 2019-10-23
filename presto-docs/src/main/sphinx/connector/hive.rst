@@ -83,8 +83,15 @@ The configuration files must exist on all Presto nodes. If you are
 referencing existing Hadoop config files, make sure to copy them to
 any Presto nodes that are not running Hadoop.
 
-HDFS Username
-^^^^^^^^^^^^^
+HDFS Username and Permissions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Before running any ``CREATE TABLE`` or ``CREATE TABLE AS`` statements
+for Hive tables in Presto, you need to check that the user Presto is
+using to access HDFS has access to the Hive warehouse directory. The Hive
+warehouse directory is specified by the configuration variable
+``hive.metastore.warehouse.dir`` in ``hive-site.xml``, and the default
+value is ``/user/hive/warehouse``.
 
 When not using Kerberos with HDFS, Presto will access HDFS using the
 OS user of the Presto process. For example, if Presto is running as
@@ -96,6 +103,13 @@ appropriate username:
 .. code-block:: none
 
     -DHADOOP_USER_NAME=hdfs_user
+
+The ``hive`` user generally works, since Hive is often started with
+the ``hive`` user and this user has access to the Hive warehouse.
+
+Whenever you change the user Presto is using to access HDFS, remove
+``/tmp/presto-*`` on HDFS, as the new user may not have access to
+the existing temporary directories.
 
 Accessing Hadoop clusters protected with Kerberos authentication
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -168,7 +182,7 @@ Property Name                                      Description                  
 
 ``hive.non-managed-table-creates-enabled``         Enable creating non-managed (external) Hive tables.          ``true``
 
-``hive.collect-column-statistics-on-write``        Enables automatic column level statistics collection         ``false``
+``hive.collect-column-statistics-on-write``        Enables automatic column level statistics collection         ``true``
                                                    on write. See `Table Statistics <#table-statistics>`__ for
                                                    details.
 
@@ -176,6 +190,18 @@ Property Name                                      Description                  
 
 ``hive.s3select-pushdown.max-connections``         Maximum number of simultaneously open connections to S3 for  500
                                                    :ref:`s3selectpushdown`.
+
+``hive.file-status-cache-tables``                  Cache directory listing for specified tables.
+                                                   Examples: ``schema.table1,schema.table2`` to cache directory
+                                                   listing only for ``table1`` and ``table2``.
+                                                   ``schema1.*,schema2.*`` to cache directory listing for all
+                                                   tables in the schemas ``schema1`` and ``schema2``.
+                                                   ``*`` to cache directory listing for all tables.
+
+``hive.file-status-cache-size``                    Maximum no. of file status entries cached for a path.        10,00,000
+
+``hive.file-status-cache-expire-time``             Duration of time after a directory listing is cached that it ``1m``
+                                                   should be automatically removed from cache.
 ================================================== ============================================================ ============
 
 Hive Thrift Metastore Configuration Properties
@@ -196,6 +222,8 @@ Property Name                                      Description
 ``hive.metastore.authentication.type``             Hive metastore authentication type.
                                                    Possible values are ``NONE`` or ``KERBEROS``
                                                    (defaults to ``NONE``).
+
+``hive.metastore.thrift.impersonation.enabled``    Enable Hive metastore end user impersonation.
 
 ``hive.metastore.service.principal``               The Kerberos principal of the Hive metastore service.
 
@@ -270,6 +298,8 @@ Property Name                                Description
 
 ``hive.s3.signer-type``                      Specify a different signer type for S3-compatible storage.
                                              Example: ``S3SignerType`` for v2 signer type
+
+``hive.s3.signer-class``                     Specify a different signer class for S3-compatible storage.
 
 ``hive.s3.path-style-access``                Use path-style access for all requests to the S3-compatible storage.
                                              This is for S3-compatible storage that doesn't support virtual-hosted-style access.
@@ -499,11 +529,9 @@ Property Name                                Description
 Table Statistics
 ----------------
 
-The Hive connector automatically collects basic statistics
+When writing data, the Hive connector always collects basic statistics
 (``numFiles``, ``numRows``, ``rawDataSize``, ``totalSize``)
-on ``INSERT`` and ``CREATE TABLE AS`` operations.
-
-The Hive connector can also collect column level statistics:
+and by default will also collect column level statistics:
 
 ============= ====================================================================
 Column Type   Collectible Statistics
@@ -522,9 +550,6 @@ Column Type   Collectible Statistics
 ``VARBINARY`` number of nulls
 ``BOOLEAN``   number of nulls, number of true/false values
 ============= ====================================================================
-
-Automatic column level statistics collection on write is controlled by
-the ``collect-column-statistics-on-write`` catalog session property.
 
 .. _hive_analyze:
 

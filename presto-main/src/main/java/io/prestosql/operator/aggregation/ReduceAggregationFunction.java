@@ -16,7 +16,7 @@ package io.prestosql.operator.aggregation;
 import com.google.common.collect.ImmutableList;
 import io.airlift.bytecode.DynamicClassLoader;
 import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.SqlAggregationFunction;
 import io.prestosql.operator.aggregation.AggregationMetadata.AccumulatorStateDescriptor;
 import io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata;
@@ -27,18 +27,19 @@ import io.prestosql.operator.aggregation.state.StateCompiler;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.block.BlockBuilder;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.sql.gen.lambda.BinaryFunctionInterface;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
+import java.util.Optional;
 
 import static io.prestosql.metadata.Signature.typeVariable;
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.INPUT_CHANNEL;
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.STATE;
 import static io.prestosql.operator.aggregation.AggregationUtils.generateAggregationName;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.TypeSignature.functionType;
 import static io.prestosql.util.Reflection.methodHandle;
 import static java.lang.String.format;
 
@@ -65,12 +66,12 @@ public class ReduceAggregationFunction
         super(NAME,
                 ImmutableList.of(typeVariable("T"), typeVariable("S")),
                 ImmutableList.of(),
-                parseTypeSignature("S"),
+                new TypeSignature("S"),
                 ImmutableList.of(
-                        parseTypeSignature("T"),
-                        parseTypeSignature("S"),
-                        parseTypeSignature("function(S,T,S)"),
-                        parseTypeSignature("function(S,S,S)")));
+                        new TypeSignature("T"),
+                        new TypeSignature("S"),
+                        functionType(new TypeSignature("S"), new TypeSignature("T"), new TypeSignature("S")),
+                        functionType(new TypeSignature("S"), new TypeSignature("S"), new TypeSignature("S"))));
     }
 
     @Override
@@ -80,7 +81,7 @@ public class ReduceAggregationFunction
     }
 
     @Override
-    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type inputType = boundVariables.getTypeVariable("T");
         Type stateType = boundVariables.getTypeVariable("S");
@@ -136,6 +137,7 @@ public class ReduceAggregationFunction
                 inputMethodHandle.asType(
                         inputMethodHandle.type()
                                 .changeParameterType(1, inputType.getJavaType())),
+                Optional.empty(),
                 combineMethodHandle,
                 outputMethodHandle,
                 ImmutableList.of(stateDescriptor),

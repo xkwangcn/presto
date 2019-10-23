@@ -13,6 +13,8 @@
  */
 package io.prestosql.plugin.hive;
 
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.deser.std.FromStringDeserializer;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Provides;
@@ -21,15 +23,25 @@ import com.google.inject.TypeLiteral;
 import com.google.inject.multibindings.Multibinder;
 import io.airlift.event.client.EventClient;
 import io.prestosql.plugin.hive.metastore.SemiTransactionalHiveMetastore;
+import io.prestosql.plugin.hive.orc.OrcFileWriterFactory;
 import io.prestosql.plugin.hive.orc.OrcPageSourceFactory;
+import io.prestosql.plugin.hive.orc.OrcReaderConfig;
+import io.prestosql.plugin.hive.orc.OrcWriterConfig;
 import io.prestosql.plugin.hive.parquet.ParquetPageSourceFactory;
+import io.prestosql.plugin.hive.parquet.ParquetReaderConfig;
+import io.prestosql.plugin.hive.parquet.ParquetWriterConfig;
 import io.prestosql.plugin.hive.rcfile.RcFilePageSourceFactory;
-import io.prestosql.plugin.hive.s3.PrestoS3ClientFactory;
+import io.prestosql.plugin.hive.s3select.PrestoS3ClientFactory;
+import io.prestosql.plugin.hive.s3select.S3SelectRecordCursorProvider;
 import io.prestosql.spi.connector.ConnectorNodePartitioningProvider;
 import io.prestosql.spi.connector.ConnectorPageSinkProvider;
 import io.prestosql.spi.connector.ConnectorPageSourceProvider;
 import io.prestosql.spi.connector.ConnectorSplitManager;
+import io.prestosql.spi.type.Type;
+import io.prestosql.spi.type.TypeId;
+import io.prestosql.spi.type.TypeManager;
 
+import javax.inject.Inject;
 import javax.inject.Singleton;
 
 import java.util.concurrent.ExecutorService;
@@ -39,9 +51,10 @@ import java.util.function.Supplier;
 import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.configuration.ConfigBinder.configBinder;
+import static io.airlift.json.JsonBinder.jsonBinder;
 import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
+import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
-import static java.util.concurrent.Executors.newFixedThreadPool;
 import static org.weakref.jmx.guice.ExportBinder.newExporter;
 
 public class HiveModule
@@ -59,6 +72,7 @@ public class HiveModule
         binder.bind(HdfsEnvironment.class).in(Scopes.SINGLETON);
         binder.bind(DirectoryLister.class).to(CachingDirectoryLister.class).in(Scopes.SINGLETON);
         configBinder(binder).bindConfig(HiveConfig.class);
+        configBinder(binder).bindConfig(HdfsConfig.class);
 
         binder.bind(HiveSessionProperties.class).in(Scopes.SINGLETON);
         binder.bind(HiveTableProperties.class).in(Scopes.SINGLETON);
@@ -104,11 +118,15 @@ public class HiveModule
         Multibinder<HiveFileWriterFactory> fileWriterFactoryBinder = newSetBinder(binder, HiveFileWriterFactory.class);
         binder.bind(OrcFileWriterFactory.class).in(Scopes.SINGLETON);
         newExporter(binder).export(OrcFileWriterFactory.class).withGeneratedName();
-        configBinder(binder).bindConfig(OrcFileWriterConfig.class);
+        configBinder(binder).bindConfig(OrcReaderConfig.class);
+        configBinder(binder).bindConfig(OrcWriterConfig.class);
         fileWriterFactoryBinder.addBinding().to(OrcFileWriterFactory.class).in(Scopes.SINGLETON);
         fileWriterFactoryBinder.addBinding().to(RcFileFileWriterFactory.class).in(Scopes.SINGLETON);
 
-        configBinder(binder).bindConfig(ParquetFileWriterConfig.class);
+        configBinder(binder).bindConfig(ParquetReaderConfig.class);
+        configBinder(binder).bindConfig(ParquetWriterConfig.class);
+
+        jsonBinder(binder).addDeserializerBinding(Type.class).to(TypeDeserializer.class);
     }
 
     @ForHive
@@ -119,20 +137,29 @@ public class HiveModule
         return newCachedThreadPool(daemonThreadsNamed("hive-" + catalogName + "-%s"));
     }
 
-    @ForCachingHiveMetastore
-    @Singleton
-    @Provides
-    public ExecutorService createCachingHiveMetastoreExecutor(HiveCatalogName catalogName, HiveConfig hiveConfig)
-    {
-        return newFixedThreadPool(
-                hiveConfig.getMaxMetastoreRefreshThreads(),
-                daemonThreadsNamed("hive-metastore-" + catalogName + "-%s"));
-    }
-
     @Singleton
     @Provides
     public Function<HiveTransactionHandle, SemiTransactionalHiveMetastore> createMetastoreGetter(HiveTransactionManager transactionManager)
     {
         return transactionHandle -> ((HiveMetadata) transactionManager.get(transactionHandle)).getMetastore();
+    }
+
+    public static final class TypeDeserializer
+            extends FromStringDeserializer<Type>
+    {
+        private final TypeManager typeManager;
+
+        @Inject
+        public TypeDeserializer(TypeManager typeManager)
+        {
+            super(Type.class);
+            this.typeManager = requireNonNull(typeManager, "metadata is null");
+        }
+
+        @Override
+        protected Type _deserialize(String value, DeserializationContext context)
+        {
+            return typeManager.getType(TypeId.of(value));
+        }
     }
 }

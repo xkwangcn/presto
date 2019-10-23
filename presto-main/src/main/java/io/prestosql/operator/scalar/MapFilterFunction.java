@@ -27,7 +27,7 @@ import io.airlift.bytecode.control.IfStatement;
 import io.prestosql.annotation.UsedByGeneratedCode;
 import io.prestosql.metadata.BoundVariables;
 import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.SqlScalarFunction;
 import io.prestosql.spi.PageBuilder;
@@ -36,7 +36,7 @@ import io.prestosql.spi.block.BlockBuilder;
 import io.prestosql.spi.type.MapType;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.spi.type.TypeSignatureParameter;
 import io.prestosql.sql.gen.CallSiteBinder;
 import io.prestosql.sql.gen.SqlTypeBytecodeExpression;
@@ -64,7 +64,9 @@ import static io.prestosql.metadata.Signature.typeVariable;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.functionTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.BooleanType.BOOLEAN;
+import static io.prestosql.spi.type.TypeSignature.functionType;
+import static io.prestosql.spi.type.TypeSignature.mapType;
 import static io.prestosql.sql.gen.SqlTypeBytecodeExpression.constantType;
 import static io.prestosql.type.UnknownType.UNKNOWN;
 import static io.prestosql.util.CompilerUtils.defineClass;
@@ -84,8 +86,10 @@ public final class MapFilterFunction
                 FunctionKind.SCALAR,
                 ImmutableList.of(typeVariable("K"), typeVariable("V")),
                 ImmutableList.of(),
-                parseTypeSignature("map(K,V)"),
-                ImmutableList.of(parseTypeSignature("map(K,V)"), parseTypeSignature("function(K,V,boolean)")),
+                mapType(new TypeSignature("K"), new TypeSignature("V")),
+                ImmutableList.of(
+                        mapType(new TypeSignature("K"), new TypeSignature("V")),
+                        functionType(new TypeSignature("K"), new TypeSignature("V"), BOOLEAN.getTypeSignature())),
                 false));
     }
 
@@ -108,13 +112,13 @@ public final class MapFilterFunction
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type keyType = boundVariables.getTypeVariable("K");
         Type valueType = boundVariables.getTypeVariable("V");
-        MapType mapType = (MapType) typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
-                TypeSignatureParameter.of(keyType.getTypeSignature()),
-                TypeSignatureParameter.of(valueType.getTypeSignature())));
+        MapType mapType = (MapType) metadata.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                TypeSignatureParameter.typeParameter(keyType.getTypeSignature()),
+                TypeSignatureParameter.typeParameter(valueType.getTypeSignature())));
         return new ScalarFunctionImplementation(
                 false,
                 ImmutableList.of(

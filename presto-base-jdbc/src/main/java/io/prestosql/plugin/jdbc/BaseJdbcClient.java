@@ -37,8 +37,6 @@ import io.prestosql.spi.type.DecimalType;
 import io.prestosql.spi.type.Type;
 import io.prestosql.spi.type.VarcharType;
 
-import javax.annotation.PreDestroy;
-
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
@@ -63,6 +61,7 @@ import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
+import static io.prestosql.plugin.jdbc.ColumnMapping.DISABLE_PUSHDOWN;
 import static io.prestosql.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.booleanWriteFunction;
@@ -77,6 +76,7 @@ import static io.prestosql.plugin.jdbc.StandardColumnMappings.shortDecimalWriteF
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.smallintWriteFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.varbinaryWriteFunction;
+import static io.prestosql.plugin.jdbc.StandardColumnMappings.varcharReadFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
 import static io.prestosql.spi.StandardErrorCode.NOT_FOUND;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
@@ -89,6 +89,7 @@ import static io.prestosql.spi.type.RealType.REAL;
 import static io.prestosql.spi.type.SmallintType.SMALLINT;
 import static io.prestosql.spi.type.TinyintType.TINYINT;
 import static io.prestosql.spi.type.VarbinaryType.VARBINARY;
+import static io.prestosql.spi.type.VarcharType.createUnboundedVarcharType;
 import static io.prestosql.spi.type.Varchars.isVarcharType;
 import static java.lang.String.format;
 import static java.lang.String.join;
@@ -97,6 +98,7 @@ import static java.util.Collections.nCopies;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.stream.Collectors.joining;
 
 public class BaseJdbcClient
         implements JdbcClient
@@ -117,6 +119,7 @@ public class BaseJdbcClient
 
     protected final ConnectionFactory connectionFactory;
     protected final String identifierQuote;
+    protected final Set<String> jdbcTypesMappedToVarchar;
     protected final boolean caseInsensitiveNameMatching;
     protected final Cache<JdbcIdentity, Map<String, String>> remoteSchemaNames;
     protected final Cache<RemoteTableNameCacheKey, Map<String, String>> remoteTableNames;
@@ -126,6 +129,7 @@ public class BaseJdbcClient
         this(
                 identifierQuote,
                 connectionFactory,
+                config.getJdbcTypesMappedToVarchar(),
                 requireNonNull(config, "config is null").isCaseInsensitiveNameMatching(),
                 config.getCaseInsensitiveNameMatchingCacheTtl());
     }
@@ -133,11 +137,13 @@ public class BaseJdbcClient
     public BaseJdbcClient(
             String identifierQuote,
             ConnectionFactory connectionFactory,
+            Set<String> jdbcTypesMappedToVarchar,
             boolean caseInsensitiveNameMatching,
             Duration caseInsensitiveNameMatchingCacheTtl)
     {
         this.identifierQuote = requireNonNull(identifierQuote, "identifierQuote is null");
         this.connectionFactory = requireNonNull(connectionFactory, "connectionFactory is null");
+        this.jdbcTypesMappedToVarchar = ImmutableSet.copyOf(requireNonNull(jdbcTypesMappedToVarchar, "jdbcTypesMappedToVarchar is null"));
         requireNonNull(caseInsensitiveNameMatchingCacheTtl, "caseInsensitiveNameMatchingCacheTtl is null");
 
         this.caseInsensitiveNameMatching = caseInsensitiveNameMatching;
@@ -145,13 +151,6 @@ public class BaseJdbcClient
                 .expireAfterWrite(caseInsensitiveNameMatchingCacheTtl.toMillis(), MILLISECONDS);
         this.remoteSchemaNames = remoteNamesCacheBuilder.build();
         this.remoteTableNames = remoteNamesCacheBuilder.build();
-    }
-
-    @PreDestroy
-    public void destroy()
-            throws Exception
-    {
-        connectionFactory.close();
     }
 
     @Override
@@ -169,7 +168,7 @@ public class BaseJdbcClient
 
     protected Collection<String> listSchemas(Connection connection)
     {
-        try (ResultSet resultSet = connection.getMetaData().getSchemas()) {
+        try (ResultSet resultSet = connection.getMetaData().getSchemas(connection.getCatalog(), null)) {
             ImmutableSet.Builder<String> schemaNames = ImmutableSet.builder();
             while (resultSet.next()) {
                 String schemaName = resultSet.getString("TABLE_SCHEM");
@@ -195,7 +194,7 @@ public class BaseJdbcClient
                 while (resultSet.next()) {
                     String tableSchema = getTableSchemaName(resultSet);
                     String tableName = resultSet.getString("TABLE_NAME");
-                    list.add(new SchemaTableName(tableSchema.toLowerCase(ENGLISH), tableName.toLowerCase(ENGLISH)));
+                    list.add(new SchemaTableName(tableSchema, tableName));
                 }
                 return list.build();
             }
@@ -237,40 +236,70 @@ public class BaseJdbcClient
     @Override
     public List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle)
     {
-        try (Connection connection = connectionFactory.openConnection(JdbcIdentity.from(session))) {
-            try (ResultSet resultSet = getColumns(tableHandle, connection.getMetaData())) {
-                List<JdbcColumnHandle> columns = new ArrayList<>();
-                while (resultSet.next()) {
-                    JdbcTypeHandle typeHandle = new JdbcTypeHandle(
-                            resultSet.getInt("DATA_TYPE"),
-                            Optional.ofNullable(resultSet.getString("TYPE_NAME")),
-                            resultSet.getInt("COLUMN_SIZE"),
-                            resultSet.getInt("DECIMAL_DIGITS"),
-                            Optional.empty());
-                    Optional<ColumnMapping> columnMapping = toPrestoType(session, connection, typeHandle);
-                    // skip unsupported column types
-                    if (columnMapping.isPresent()) {
-                        String columnName = resultSet.getString("COLUMN_NAME");
-                        boolean nullable = (resultSet.getInt("NULLABLE") != columnNoNulls);
-                        columns.add(new JdbcColumnHandle(columnName, typeHandle, columnMapping.get().getType(), nullable));
-                    }
+        try (Connection connection = connectionFactory.openConnection(JdbcIdentity.from(session));
+                ResultSet resultSet = getColumns(tableHandle, connection.getMetaData())) {
+            int allColumns = 0;
+            List<JdbcColumnHandle> columns = new ArrayList<>();
+            while (resultSet.next()) {
+                allColumns++;
+                String columnName = resultSet.getString("COLUMN_NAME");
+                JdbcTypeHandle typeHandle = new JdbcTypeHandle(
+                        resultSet.getInt("DATA_TYPE"),
+                        Optional.ofNullable(resultSet.getString("TYPE_NAME")),
+                        resultSet.getInt("COLUMN_SIZE"),
+                        resultSet.getInt("DECIMAL_DIGITS"),
+                        Optional.empty());
+                Optional<ColumnMapping> columnMapping = toPrestoType(session, connection, typeHandle);
+                log.debug("Mapping data type of '%s' column '%s': %s mapped to %s", tableHandle.getSchemaTableName(), columnName, typeHandle, columnMapping);
+                // skip unsupported column types
+                if (columnMapping.isPresent()) {
+                    boolean nullable = (resultSet.getInt("NULLABLE") != columnNoNulls);
+                    columns.add(new JdbcColumnHandle(columnName, typeHandle, columnMapping.get().getType(), nullable));
                 }
-                if (columns.isEmpty()) {
-                    // In rare cases (e.g. PostgreSQL) a table might have no columns.
-                    throw new TableNotFoundException(tableHandle.getSchemaTableName());
-                }
-                return ImmutableList.copyOf(columns);
             }
+            if (columns.isEmpty()) {
+                // A table may have no supported columns. In rare cases (e.g. PostgreSQL) a table might have no columns at all.
+                throw new TableNotFoundException(
+                        tableHandle.getSchemaTableName(),
+                        format("Table '%s' has no supported columns (all %s columns are not supported)", tableHandle.getSchemaTableName(), allColumns));
+            }
+            return ImmutableList.copyOf(columns);
         }
         catch (SQLException e) {
             throw new PrestoException(JDBC_ERROR, e);
         }
     }
 
+    protected static ResultSet getColumns(JdbcTableHandle tableHandle, DatabaseMetaData metadata)
+            throws SQLException
+    {
+        return metadata.getColumns(
+                tableHandle.getCatalogName(),
+                escapeNamePattern(Optional.ofNullable(tableHandle.getSchemaName()), metadata.getSearchStringEscape()).orElse(null),
+                escapeNamePattern(Optional.ofNullable(tableHandle.getTableName()), metadata.getSearchStringEscape()).orElse(null),
+                null);
+    }
+
     @Override
     public Optional<ColumnMapping> toPrestoType(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
+        Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
+        if (mapping.isPresent()) {
+            return mapping;
+        }
         return jdbcTypeToPrestoType(session, typeHandle);
+    }
+
+    protected Optional<ColumnMapping> getForcedMappingToVarchar(JdbcTypeHandle typeHandle)
+    {
+        if (typeHandle.getJdbcTypeName().isPresent() && jdbcTypesMappedToVarchar.contains(typeHandle.getJdbcTypeName().get())) {
+            return Optional.of(ColumnMapping.sliceMapping(
+                    createUnboundedVarcharType(),
+                    varcharReadFunction(),
+                    varcharWriteFunction(),
+                    DISABLE_PUSHDOWN));
+        }
+        return Optional.empty();
     }
 
     @Override
@@ -325,17 +354,6 @@ public class BaseJdbcClient
     @Override
     public JdbcOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata)
     {
-        return beginWriteTable(session, tableMetadata);
-    }
-
-    @Override
-    public JdbcOutputTableHandle beginInsertTable(ConnectorSession session, ConnectorTableMetadata tableMetadata)
-    {
-        return beginWriteTable(session, tableMetadata);
-    }
-
-    private JdbcOutputTableHandle beginWriteTable(ConnectorSession session, ConnectorTableMetadata tableMetadata)
-    {
         try {
             return createTable(session, tableMetadata, generateTemporaryTableName());
         }
@@ -373,7 +391,6 @@ public class BaseJdbcClient
                 }
                 columnNames.add(columnName);
                 columnTypes.add(column.getType());
-                // TODO in INSERT case, we should reuse original column type and, ideally, constraints (then JdbcPageSink must get writer from toPrestoType())
                 columnList.add(getColumnSql(session, column, columnName));
             }
 
@@ -389,6 +406,7 @@ public class BaseJdbcClient
                     remoteTable,
                     columnNames.build(),
                     columnTypes.build(),
+                    Optional.empty(),
                     tableName);
         }
     }
@@ -403,6 +421,60 @@ public class BaseJdbcClient
             sb.append(" NOT NULL");
         }
         return sb.toString();
+    }
+
+    @Override
+    public JdbcOutputTableHandle beginInsertTable(ConnectorSession session, JdbcTableHandle tableHandle)
+    {
+        SchemaTableName schemaTableName = tableHandle.getSchemaTableName();
+        JdbcIdentity identity = JdbcIdentity.from(session);
+
+        try (Connection connection = connectionFactory.openConnection(identity)) {
+            boolean uppercase = connection.getMetaData().storesUpperCaseIdentifiers();
+            String remoteSchema = toRemoteSchemaName(identity, connection, schemaTableName.getSchemaName());
+            String remoteTable = toRemoteTableName(identity, connection, remoteSchema, schemaTableName.getTableName());
+            String tableName = generateTemporaryTableName();
+            if (uppercase) {
+                tableName = tableName.toUpperCase(ENGLISH);
+            }
+            String catalog = connection.getCatalog();
+
+            ImmutableList.Builder<String> columnNames = ImmutableList.builder();
+            ImmutableList.Builder<Type> columnTypes = ImmutableList.builder();
+            ImmutableList.Builder<JdbcTypeHandle> jdbcColumnTypes = ImmutableList.builder();
+            for (JdbcColumnHandle column : getColumns(session, tableHandle)) {
+                columnNames.add(column.getColumnName());
+                columnTypes.add(column.getColumnType());
+                jdbcColumnTypes.add(column.getJdbcTypeHandle());
+            }
+
+            copyTableSchema(connection, catalog, remoteSchema, remoteTable, tableName, columnNames.build());
+
+            return new JdbcOutputTableHandle(
+                    catalog,
+                    remoteSchema,
+                    remoteTable,
+                    columnNames.build(),
+                    columnTypes.build(),
+                    Optional.of(jdbcColumnTypes.build()),
+                    tableName);
+        }
+        catch (SQLException e) {
+            throw new PrestoException(JDBC_ERROR, e);
+        }
+    }
+
+    protected void copyTableSchema(Connection connection, String catalogName, String schemaName, String tableName, String newTableName, List<String> columnNames)
+            throws SQLException
+    {
+        String sql = format(
+                "CREATE TABLE %s AS SELECT %s FROM %s WHERE 0 = 1",
+                quoted(catalogName, schemaName, newTableName),
+                columnNames.stream()
+                        .map(this::quoted)
+                        .collect(joining(", ")),
+                quoted(catalogName, schemaName, tableName));
+        execute(connection, sql);
     }
 
     protected String generateTemporaryTableName()
@@ -573,11 +645,10 @@ public class BaseJdbcClient
             throws SQLException
     {
         DatabaseMetaData metadata = connection.getMetaData();
-        Optional<String> escape = Optional.ofNullable(metadata.getSearchStringEscape());
         return metadata.getTables(
                 connection.getCatalog(),
-                escapeNamePattern(schemaName, escape).orElse(null),
-                escapeNamePattern(tableName, escape).orElse(null),
+                escapeNamePattern(schemaName, metadata.getSearchStringEscape()).orElse(null),
+                escapeNamePattern(tableName, metadata.getSearchStringEscape()).orElse(null),
                 new String[] {"TABLE", "VIEW"});
     }
 
@@ -780,34 +851,21 @@ public class BaseJdbcClient
         return sb.toString();
     }
 
-    protected static Optional<String> escapeNamePattern(Optional<String> name, Optional<String> escape)
+    protected static Optional<String> escapeNamePattern(Optional<String> name, String escape)
     {
-        if (!name.isPresent() || !escape.isPresent()) {
-            return name;
-        }
-        return Optional.of(escapeNamePattern(name.get(), escape.get()));
+        return name.map(string -> escapeNamePattern(string, escape));
     }
 
     private static String escapeNamePattern(String name, String escape)
     {
         requireNonNull(name, "name is null");
         requireNonNull(escape, "escape is null");
+        checkArgument(!escape.isEmpty(), "Escape string must not be empty");
         checkArgument(!escape.equals("_"), "Escape string must not be '_'");
         checkArgument(!escape.equals("%"), "Escape string must not be '%'");
         name = name.replace(escape, escape + escape);
         name = name.replace("_", escape + "_");
         name = name.replace("%", escape + "%");
         return name;
-    }
-
-    protected static ResultSet getColumns(JdbcTableHandle tableHandle, DatabaseMetaData metadata)
-            throws SQLException
-    {
-        Optional<String> escape = Optional.ofNullable(metadata.getSearchStringEscape());
-        return metadata.getColumns(
-                tableHandle.getCatalogName(),
-                escapeNamePattern(Optional.ofNullable(tableHandle.getSchemaName()), escape).orElse(null),
-                escapeNamePattern(Optional.ofNullable(tableHandle.getTableName()), escape).orElse(null),
-                null);
     }
 }

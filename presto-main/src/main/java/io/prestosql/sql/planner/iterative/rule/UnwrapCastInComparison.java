@@ -17,7 +17,7 @@ import io.prestosql.Session;
 import io.prestosql.SystemSessionProperties;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.OperatorNotFoundException;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.predicate.Utils;
 import io.prestosql.spi.type.BooleanType;
@@ -36,6 +36,7 @@ import io.prestosql.sql.tree.ExpressionTreeRewriter;
 import io.prestosql.sql.tree.IsNotNullPredicate;
 import io.prestosql.sql.tree.IsNullPredicate;
 import io.prestosql.sql.tree.NullLiteral;
+import io.prestosql.type.TypeCoercion;
 
 import java.util.Optional;
 
@@ -126,8 +127,8 @@ public class UnwrapCastInComparison
             this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
             this.session = requireNonNull(session, "session is null");
             this.types = requireNonNull(types, "types is null");
-            this.functionInvoker = new InterpretedFunctionInvoker(metadata.getFunctionRegistry());
-            this.literalEncoder = new LiteralEncoder(metadata.getBlockEncodingSerde());
+            this.functionInvoker = new InterpretedFunctionInvoker(metadata);
+            this.literalEncoder = new LiteralEncoder(metadata);
         }
 
         @Override
@@ -177,7 +178,7 @@ public class UnwrapCastInComparison
                 return expression;
             }
 
-            Signature sourceToTarget = metadata.getFunctionRegistry().getCoercion(sourceType, targetType);
+            ResolvedFunction sourceToTarget = metadata.getCoercion(sourceType, targetType);
 
             Optional<Type.Range> sourceRange = sourceType.getRange();
             if (sourceRange.isPresent()) {
@@ -266,9 +267,9 @@ public class UnwrapCastInComparison
                 }
             }
 
-            Signature targetToSource;
+            ResolvedFunction targetToSource;
             try {
-                targetToSource = metadata.getFunctionRegistry().getCoercion(targetType, sourceType);
+                targetToSource = metadata.getCoercion(targetType, sourceType);
             }
             catch (OperatorNotFoundException e) {
                 // Without a cast between target -> source, there's nothing more we can do
@@ -371,10 +372,10 @@ public class UnwrapCastInComparison
             }
 
             // Well-behaved implicit casts are injective
-            return metadata.getTypeManager().canCoerce(source, target);
+            return new TypeCoercion(metadata::getType).canCoerce(source, target);
         }
 
-        private Object coerce(Object value, Signature coercion)
+        private Object coerce(Object value, ResolvedFunction coercion)
         {
             return functionInvoker.invoke(coercion, session.toConnectorSession(), value);
         }

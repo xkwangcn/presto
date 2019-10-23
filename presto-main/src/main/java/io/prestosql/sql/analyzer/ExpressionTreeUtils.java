@@ -14,13 +14,15 @@
 package io.prestosql.sql.analyzer;
 
 import com.google.common.collect.ImmutableList;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
+import io.prestosql.spi.Location;
 import io.prestosql.sql.tree.DefaultExpressionTraversalVisitor;
 import io.prestosql.sql.tree.Expression;
 import io.prestosql.sql.tree.FunctionCall;
 import io.prestosql.sql.tree.Node;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Predicate;
 
 import static com.google.common.base.Predicates.alwaysTrue;
@@ -31,9 +33,9 @@ public final class ExpressionTreeUtils
 {
     private ExpressionTreeUtils() {}
 
-    static List<FunctionCall> extractAggregateFunctions(Iterable<? extends Node> nodes, FunctionRegistry functionRegistry)
+    static List<FunctionCall> extractAggregateFunctions(Iterable<? extends Node> nodes, Metadata metadata)
     {
-        return extractExpressions(nodes, FunctionCall.class, isAggregationPredicate(functionRegistry));
+        return extractExpressions(nodes, FunctionCall.class, function -> isAggregation(function, metadata));
     }
 
     static List<FunctionCall> extractWindowFunctions(Iterable<? extends Node> nodes)
@@ -48,11 +50,11 @@ public final class ExpressionTreeUtils
         return extractExpressions(nodes, clazz, alwaysTrue());
     }
 
-    private static Predicate<FunctionCall> isAggregationPredicate(FunctionRegistry functionRegistry)
+    private static boolean isAggregation(FunctionCall functionCall, Metadata metadata)
     {
-        return ((functionCall) -> (functionRegistry.isAggregationFunction(functionCall.getName())
-                || functionCall.getFilter().isPresent()) && !functionCall.getWindow().isPresent()
-                || functionCall.getOrderBy().isPresent());
+        return ((metadata.isAggregationFunction(functionCall.getName()) || functionCall.getFilter().isPresent())
+                && !functionCall.getWindow().isPresent())
+                || functionCall.getOrderBy().isPresent();
     }
 
     private static boolean isWindowFunction(FunctionCall functionCall)
@@ -91,5 +93,11 @@ public final class ExpressionTreeUtils
             }
         }.process(node, null);
         return nodes.build();
+    }
+
+    public static Optional<Location> extractLocation(Node node)
+    {
+        return node.getLocation()
+                .map(location -> new Location(location.getLineNumber(), location.getColumnNumber()));
     }
 }

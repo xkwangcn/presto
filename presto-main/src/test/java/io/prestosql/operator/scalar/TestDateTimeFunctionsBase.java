@@ -53,6 +53,7 @@ import java.util.concurrent.TimeUnit;
 import static io.prestosql.SystemSessionProperties.isLegacyTimestamp;
 import static io.prestosql.operator.scalar.DateTimeFunctions.currentDate;
 import static io.prestosql.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
+import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.DoubleType.DOUBLE;
 import static io.prestosql.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
@@ -337,6 +338,14 @@ public abstract class TestDateTimeFunctionsBase
         assertFunction("year_of_week(DATE '2010-01-03')", BIGINT, 2009L);
         assertFunction("year_of_week(TIMESTAMP '2001-08-22 03:04:05.321 +07:09')", BIGINT, 2001L);
         assertFunction("year_of_week(TIMESTAMP '2010-01-03 03:04:05.321')", BIGINT, 2009L);
+    }
+
+    @Test
+    public void testLastDayOfMonth()
+    {
+        assertFunction("last_day_of_month(" + DATE_LITERAL + ")", DateType.DATE, toDate(DATE.withDayOfMonth(31)));
+        assertFunction("last_day_of_month(" + TIMESTAMP_LITERAL + ")", DateType.DATE, toDate(DATE.withDayOfMonth(31)));
+        assertFunction("last_day_of_month(" + WEIRD_TIMESTAMP_LITERAL + ")", DateType.DATE, toDate(DATE.withDayOfMonth(31)));
     }
 
     @Test
@@ -756,6 +765,7 @@ public abstract class TestDateTimeFunctionsBase
         assertFunction("date_format(" + dateTimeLiteral + ", '%g')", VARCHAR, "g");
         assertFunction("date_format(" + dateTimeLiteral + ", '%4')", VARCHAR, "4");
         assertFunction("date_format(" + dateTimeLiteral + ", '%x %v')", VARCHAR, "2001 02");
+        assertFunction("date_format(" + dateTimeLiteral + ", '%Y年%m月%d日')", VARCHAR, "2001年01月09日");
 
         String weirdDateTimeLiteral = "TIMESTAMP '2001-01-09 13:04:05.321 +07:09'";
 
@@ -788,6 +798,7 @@ public abstract class TestDateTimeFunctionsBase
         assertFunction("date_format(" + weirdDateTimeLiteral + ", '%g')", VARCHAR, "g");
         assertFunction("date_format(" + weirdDateTimeLiteral + ", '%4')", VARCHAR, "4");
         assertFunction("date_format(" + weirdDateTimeLiteral + ", '%x %v')", VARCHAR, "2001 02");
+        assertFunction("date_format(" + weirdDateTimeLiteral + ", '%Y年%m月%d日')", VARCHAR, "2001年01月09日");
 
         assertFunction("date_format(TIMESTAMP '2001-01-09 13:04:05.32', '%f')", VARCHAR, "320000");
         assertFunction("date_format(TIMESTAMP '2001-01-09 00:04:05.32', '%k')", VARCHAR, "0");
@@ -1119,6 +1130,46 @@ public abstract class TestDateTimeFunctionsBase
         assertFunction("to_milliseconds(parse_duration('1s'))", BigintType.BIGINT, SECONDS.toMillis(1));
         assertFunction("to_milliseconds(parse_duration('1h'))", BigintType.BIGINT, HOURS.toMillis(1));
         assertFunction("to_milliseconds(parse_duration('1d'))", BigintType.BIGINT, DAYS.toMillis(1));
+    }
+
+    @Test
+    public void testWithTimezone()
+    {
+        assertFunction(
+                "with_timezone(TIMESTAMP '2001-08-22 03:04:05.321', 'UTC')",
+                TIMESTAMP_WITH_TIME_ZONE,
+                toTimestampWithTimeZone(new DateTime(2001, 8, 22, 3, 4, 5, 321, getDateTimeZone(getTimeZoneKey("UTC")))));
+        assertFunction(
+                "with_timezone(TIMESTAMP '2001-08-22 03:04:05.321', '+13')",
+                TIMESTAMP_WITH_TIME_ZONE,
+                toTimestampWithTimeZone(new DateTime(2001, 8, 22, 3, 4, 5, 321, getDateTimeZone(getTimeZoneKey("+13")))));
+        assertFunction(
+                "with_timezone(TIMESTAMP '2001-08-22 03:04:05.321', '-14')",
+                TIMESTAMP_WITH_TIME_ZONE,
+                toTimestampWithTimeZone(new DateTime(2001, 8, 22, 3, 4, 5, 321, getDateTimeZone(getTimeZoneKey("-14")))));
+        assertFunction(
+                "with_timezone(TIMESTAMP '2001-08-22 03:04:05.321', '+00:45')",
+                TIMESTAMP_WITH_TIME_ZONE,
+                toTimestampWithTimeZone(new DateTime(2001, 8, 22, 3, 4, 5, 321, getDateTimeZone(getTimeZoneKey("+00:45")))));
+        assertFunction(
+                "with_timezone(TIMESTAMP '2001-08-22 03:04:05.321', 'Asia/Shanghai')",
+                TIMESTAMP_WITH_TIME_ZONE,
+                toTimestampWithTimeZone(new DateTime(2001, 8, 22, 3, 4, 5, 321, getDateTimeZone(getTimeZoneKey("Asia/Shanghai")))));
+        assertFunction(
+                "with_timezone(TIMESTAMP '2001-08-22 03:04:05.321', 'America/New_York')",
+                TIMESTAMP_WITH_TIME_ZONE,
+                toTimestampWithTimeZone(new DateTime(2001, 8, 22, 3, 4, 5, 321, getDateTimeZone(getTimeZoneKey("America/New_York")))));
+
+        assertFunction(
+                "with_timezone(TIMESTAMP '2001-06-01 03:04:05.321', 'America/Los_Angeles')",
+                TIMESTAMP_WITH_TIME_ZONE,
+                toTimestampWithTimeZone(new DateTime(2001, 6, 1, 3, 4, 5, 321, getDateTimeZone(getTimeZoneKey("America/Los_Angeles")))));
+        assertFunction(
+                "with_timezone(TIMESTAMP '2001-12-01 03:04:05.321', 'America/Los_Angeles')",
+                TIMESTAMP_WITH_TIME_ZONE,
+                toTimestampWithTimeZone(new DateTime(2001, 12, 1, 3, 4, 5, 321, getDateTimeZone(getTimeZoneKey("America/Los_Angeles")))));
+
+        assertInvalidFunction("with_timezone(TIMESTAMP '2001-08-22 03:04:05.321', 'invalidzoneid')", NOT_SUPPORTED, "Time zone not supported: invalidzoneid");
     }
 
     private void assertFunctionString(String projection, Type expectedType, String expected)

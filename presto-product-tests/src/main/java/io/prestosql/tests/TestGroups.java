@@ -50,6 +50,7 @@ public final class TestGroups
     public static final String HDFS_IMPERSONATION = "hdfs_impersonation";
     public static final String HDFS_NO_IMPERSONATION = "hdfs_no_impersonation";
     public static final String HIVE_PARTITIONING = "hive_partitioning";
+    public static final String HIVE_COMPRESSION = "hive_compression";
     public static final String AUTHORIZATION = "authorization";
     public static final String HIVE_COERCION = "hive_coercion";
     public static final String CASSANDRA = "cassandra";
@@ -63,7 +64,6 @@ public final class TestGroups
     public static final String BIG_QUERY = "big_query";
     public static final String HIVE_TABLE_STATISTICS = "hive_table_statistics";
     public static final String KAFKA = "kafka";
-    public static final String AVRO = "avro";
 
     private TestGroups() {}
 }

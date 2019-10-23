@@ -16,7 +16,7 @@ package io.prestosql.operator.aggregation.arrayagg;
 import com.google.common.collect.ImmutableList;
 import io.airlift.bytecode.DynamicClassLoader;
 import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.SqlAggregationFunction;
 import io.prestosql.operator.aggregation.AccumulatorCompiler;
 import io.prestosql.operator.aggregation.AggregationMetadata;
@@ -31,10 +31,11 @@ import io.prestosql.spi.function.AccumulatorStateFactory;
 import io.prestosql.spi.function.AccumulatorStateSerializer;
 import io.prestosql.spi.type.ArrayType;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
+import java.util.Optional;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.metadata.Signature.typeVariable;
@@ -42,7 +43,7 @@ import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMet
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.NULLABLE_BLOCK_INPUT_CHANNEL;
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.STATE;
 import static io.prestosql.operator.aggregation.AggregationUtils.generateAggregationName;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.TypeSignature.arrayType;
 import static io.prestosql.util.Reflection.methodHandle;
 import static java.util.Objects.requireNonNull;
 
@@ -61,8 +62,8 @@ public class ArrayAggregationFunction
         super(NAME,
                 ImmutableList.of(typeVariable("T")),
                 ImmutableList.of(),
-                parseTypeSignature("array(T)"),
-                ImmutableList.of(parseTypeSignature("T")));
+                arrayType(new TypeSignature("T")),
+                ImmutableList.of(new TypeSignature("T")));
         this.groupMode = requireNonNull(groupMode, "groupMode is null");
     }
 
@@ -73,7 +74,7 @@ public class ArrayAggregationFunction
     }
 
     @Override
-    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type type = boundVariables.getTypeVariable("T");
         return generateAggregation(type, groupMode);
@@ -100,6 +101,7 @@ public class ArrayAggregationFunction
                 generateAggregationName(NAME, type.getTypeSignature(), inputTypes.stream().map(Type::getTypeSignature).collect(toImmutableList())),
                 inputParameterMetadata,
                 inputFunction,
+                Optional.empty(),
                 combineFunction,
                 outputFunction,
                 ImmutableList.of(new AccumulatorStateDescriptor(

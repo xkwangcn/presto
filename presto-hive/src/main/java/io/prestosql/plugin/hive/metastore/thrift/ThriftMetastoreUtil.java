@@ -22,6 +22,7 @@ import com.google.common.primitives.Shorts;
 import io.prestosql.plugin.hive.HiveBasicStatistics;
 import io.prestosql.plugin.hive.HiveBucketProperty;
 import io.prestosql.plugin.hive.HiveType;
+import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.plugin.hive.metastore.Column;
 import io.prestosql.plugin.hive.metastore.Database;
 import io.prestosql.plugin.hive.metastore.HiveColumnStatistics;
@@ -77,7 +78,6 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
@@ -95,6 +95,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_INVALID_METADATA;
 import static io.prestosql.plugin.hive.HiveMetadata.AVRO_SCHEMA_URL_KEY;
 import static io.prestosql.plugin.hive.HiveStorageFormat.AVRO;
+import static io.prestosql.plugin.hive.HiveStorageFormat.CSV;
 import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.createBinaryColumnStatistics;
 import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.createBooleanColumnStatistics;
 import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.createDateColumnStatistics;
@@ -204,7 +205,7 @@ public final class ThriftMetastoreUtil
     public static PrivilegeGrantInfo toMetastoreApiPrivilegeGrantInfo(HivePrivilegeInfo privilegeInfo)
     {
         return new PrivilegeGrantInfo(
-                privilegeInfo.getHivePrivilege().name().toLowerCase(Locale.ENGLISH),
+                privilegeInfo.getHivePrivilege().name().toLowerCase(ENGLISH),
                 0,
                 privilegeInfo.getGrantor().getName(),
                 fromPrestoPrincipalType(privilegeInfo.getGrantor().getType()),
@@ -286,22 +287,23 @@ public final class ThriftMetastoreUtil
 
     public static Stream<HivePrivilegeInfo> listEnabledTablePrivileges(SemiTransactionalHiveMetastore metastore, String databaseName, String tableName, ConnectorIdentity identity)
     {
-        return listTablePrivileges(metastore, databaseName, tableName, listEnabledPrincipals(metastore, identity));
+        return listTablePrivileges(metastore, new HiveIdentity(identity), databaseName, tableName, listEnabledPrincipals(metastore, identity));
     }
 
-    public static Stream<HivePrivilegeInfo> listApplicableTablePrivileges(SemiTransactionalHiveMetastore metastore, String databaseName, String tableName, String user)
+    public static Stream<HivePrivilegeInfo> listApplicableTablePrivileges(SemiTransactionalHiveMetastore metastore, String databaseName, String tableName, ConnectorIdentity identity)
     {
+        String user = identity.getUser();
         HivePrincipal userPrincipal = new HivePrincipal(USER, user);
         Stream<HivePrincipal> principals = Stream.concat(
                 Stream.of(userPrincipal),
                 listApplicableRoles(metastore, userPrincipal)
-                .map(role -> new HivePrincipal(ROLE, role)));
-        return listTablePrivileges(metastore, databaseName, tableName, principals);
+                        .map(role -> new HivePrincipal(ROLE, role)));
+        return listTablePrivileges(metastore, new HiveIdentity(identity), databaseName, tableName, principals);
     }
 
-    private static Stream<HivePrivilegeInfo> listTablePrivileges(SemiTransactionalHiveMetastore metastore, String databaseName, String tableName, Stream<HivePrincipal> principals)
+    private static Stream<HivePrivilegeInfo> listTablePrivileges(SemiTransactionalHiveMetastore metastore, HiveIdentity identity, String databaseName, String tableName, Stream<HivePrincipal> principals)
     {
-        return principals.flatMap(principal -> metastore.listTablePrivileges(databaseName, tableName, principal).stream());
+        return principals.flatMap(principal -> metastore.listTablePrivileges(identity, databaseName, tableName, principal).stream());
     }
 
     public static boolean isRoleEnabled(ConnectorIdentity identity, Function<HivePrincipal, Set<RoleGrant>> listRoleGrants, String role)
@@ -437,7 +439,7 @@ public final class ThriftMetastoreUtil
                 .setViewOriginalText(Optional.ofNullable(emptyToNull(table.getViewOriginalText())))
                 .setViewExpandedText(Optional.ofNullable(emptyToNull(table.getViewExpandedText())));
 
-        fromMetastoreApiStorageDescriptor(storageDescriptor, tableBuilder.getStorageBuilder(), table.getTableName());
+        fromMetastoreApiStorageDescriptor(table.getParameters(), storageDescriptor, tableBuilder.getStorageBuilder(), table.getTableName());
 
         return tableBuilder.build();
     }
@@ -447,6 +449,21 @@ public final class ThriftMetastoreUtil
         if (table.getParameters() == null) {
             return false;
         }
+        SerDeInfo serdeInfo = getSerdeInfo(table);
+
+        return serdeInfo.getSerializationLib() != null &&
+                (table.getParameters().get(AVRO_SCHEMA_URL_KEY) != null ||
+                        (serdeInfo.getParameters() != null && serdeInfo.getParameters().get(AVRO_SCHEMA_URL_KEY) != null)) &&
+                serdeInfo.getSerializationLib().equals(AVRO.getSerDe());
+    }
+
+    public static boolean isCsvTable(org.apache.hadoop.hive.metastore.api.Table table)
+    {
+        return CSV.getSerDe().equals(getSerdeInfo(table).getSerializationLib());
+    }
+
+    private static SerDeInfo getSerdeInfo(org.apache.hadoop.hive.metastore.api.Table table)
+    {
         StorageDescriptor storageDescriptor = table.getSd();
         if (storageDescriptor == null) {
             throw new PrestoException(HIVE_INVALID_METADATA, "Table does not contain a storage descriptor: " + table);
@@ -456,13 +473,20 @@ public final class ThriftMetastoreUtil
             throw new PrestoException(HIVE_INVALID_METADATA, "Table storage descriptor is missing SerDe info");
         }
 
-        return serdeInfo.getSerializationLib() != null &&
-                (table.getParameters().get(AVRO_SCHEMA_URL_KEY) != null ||
-                        (serdeInfo.getParameters() != null && serdeInfo.getParameters().get(AVRO_SCHEMA_URL_KEY) != null)) &&
-                serdeInfo.getSerializationLib().equals(AVRO.getSerDe());
+        return serdeInfo;
     }
 
     public static Partition fromMetastoreApiPartition(org.apache.hadoop.hive.metastore.api.Partition partition)
+    {
+        StorageDescriptor storageDescriptor = partition.getSd();
+        if (storageDescriptor == null) {
+            throw new PrestoException(HIVE_INVALID_METADATA, "Partition does not contain a storage descriptor: " + partition);
+        }
+
+        return fromMetastoreApiPartition(partition, storageDescriptor.getCols());
+    }
+
+    public static Partition fromMetastoreApiPartition(org.apache.hadoop.hive.metastore.api.Partition partition, List<FieldSchema> schema)
     {
         StorageDescriptor storageDescriptor = partition.getSd();
         if (storageDescriptor == null) {
@@ -473,12 +497,17 @@ public final class ThriftMetastoreUtil
                 .setDatabaseName(partition.getDbName())
                 .setTableName(partition.getTableName())
                 .setValues(partition.getValues())
-                .setColumns(storageDescriptor.getCols().stream()
+                .setColumns(schema.stream()
                         .map(ThriftMetastoreUtil::fromMetastoreApiFieldSchema)
                         .collect(toList()))
                 .setParameters(partition.getParameters());
 
-        fromMetastoreApiStorageDescriptor(storageDescriptor, partitionBuilder.getStorageBuilder(), format("%s.%s", partition.getTableName(), partition.getValues()));
+        // TODO is bucketing_version set on partition level??
+        fromMetastoreApiStorageDescriptor(
+                partition.getParameters(),
+                storageDescriptor,
+                partitionBuilder.getStorageBuilder(),
+                format("%s.%s", partition.getTableName(), partition.getValues()));
 
         return partitionBuilder.build();
     }
@@ -677,7 +706,11 @@ public final class ThriftMetastoreUtil
         return new Column(fieldSchema.getName(), HiveType.valueOf(fieldSchema.getType()), Optional.ofNullable(emptyToNull(fieldSchema.getComment())));
     }
 
-    private static void fromMetastoreApiStorageDescriptor(StorageDescriptor storageDescriptor, Storage.Builder builder, String tablePartitionName)
+    private static void fromMetastoreApiStorageDescriptor(
+            Map<String, String> tableParameters,
+            StorageDescriptor storageDescriptor,
+            Storage.Builder builder,
+            String tablePartitionName)
     {
         SerDeInfo serdeInfo = storageDescriptor.getSerdeInfo();
         if (serdeInfo == null) {
@@ -686,7 +719,7 @@ public final class ThriftMetastoreUtil
 
         builder.setStorageFormat(StorageFormat.createNullable(serdeInfo.getSerializationLib(), storageDescriptor.getInputFormat(), storageDescriptor.getOutputFormat()))
                 .setLocation(nullToEmpty(storageDescriptor.getLocation()))
-                .setBucketProperty(HiveBucketProperty.fromStorageDescriptor(storageDescriptor, tablePartitionName))
+                .setBucketProperty(HiveBucketProperty.fromStorageDescriptor(tableParameters, storageDescriptor, tablePartitionName))
                 .setSkewed(storageDescriptor.isSetSkewedInfo() && storageDescriptor.getSkewedInfo().isSetSkewedColNames() && !storageDescriptor.getSkewedInfo().getSkewedColNames().isEmpty())
                 .setSerdeParameters(serdeInfo.getParameters() == null ? ImmutableMap.of() : serdeInfo.getParameters());
     }

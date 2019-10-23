@@ -29,7 +29,6 @@ import io.prestosql.metadata.FunctionListBuilder;
 import io.prestosql.metadata.SqlFunction;
 import io.prestosql.spi.session.PropertyMetadata;
 import io.prestosql.spi.type.SqlTimestampWithTimeZone;
-import io.prestosql.sql.analyzer.SemanticException;
 import io.prestosql.testing.MaterializedResult;
 import io.prestosql.testing.MaterializedRow;
 import io.prestosql.type.SqlIntervalDayTime;
@@ -48,9 +47,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.IntStream;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static com.google.common.collect.Iterables.transform;
-import static io.prestosql.connector.informationschema.InformationSchemaMetadata.INFORMATION_SCHEMA;
+import static io.prestosql.connector.informationschema.InformationSchemaTable.INFORMATION_SCHEMA;
 import static io.prestosql.operator.scalar.ApplyFunction.APPLY_FUNCTION;
 import static io.prestosql.operator.scalar.InvokeFunction.INVOKE_FUNCTION;
 import static io.prestosql.spi.type.BigintType.BIGINT;
@@ -58,8 +57,6 @@ import static io.prestosql.spi.type.BooleanType.BOOLEAN;
 import static io.prestosql.spi.type.DecimalType.createDecimalType;
 import static io.prestosql.spi.type.DoubleType.DOUBLE;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
-import static io.prestosql.sql.analyzer.SemanticErrorCode.INVALID_PARAMETER_USAGE;
-import static io.prestosql.sql.analyzer.SemanticErrorCode.MUST_BE_AGGREGATE_OR_GROUP_BY;
 import static io.prestosql.sql.tree.ExplainType.Type.DISTRIBUTED;
 import static io.prestosql.sql.tree.ExplainType.Type.IO;
 import static io.prestosql.sql.tree.ExplainType.Type.LOGICAL;
@@ -86,7 +83,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotEquals;
 import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.fail;
 
 public abstract class AbstractTestQueries
         extends AbstractTestQueryFramework
@@ -599,16 +595,6 @@ public abstract class AbstractTestQueries
                 "SELECT * FROM (SELECT custkey FROM orders ORDER BY orderkey LIMIT 1) CROSS JOIN (VALUES (10, 1), (20, 2), (30, 3))");
 
         assertQuery("SELECT * FROM orders, UNNEST(ARRAY[1])", "SELECT orders.*, 1 FROM orders");
-
-        assertQueryFails(
-                "SELECT * FROM (VALUES array[2, 2]) a(x) LEFT OUTER JOIN UNNEST(x) ON true",
-                "line .*: UNNEST on other than the right side of CROSS JOIN is not supported");
-        assertQueryFails(
-                "SELECT * FROM (VALUES array[2, 2]) a(x) RIGHT OUTER JOIN UNNEST(x) ON true",
-                "line .*: UNNEST on other than the right side of CROSS JOIN is not supported");
-        assertQueryFails(
-                "SELECT * FROM (VALUES array[2, 2]) a(x) FULL OUTER JOIN UNNEST(x) ON true",
-                "line .*: UNNEST on other than the right side of CROSS JOIN is not supported");
     }
 
     @Test
@@ -735,7 +721,9 @@ public abstract class AbstractTestQueries
                 "   approx_percentile(orderkey, 0.5), " +
                 "   approx_percentile(totalprice, 0.5)," +
                 "   approx_percentile(orderkey, 2, 0.5)," +
-                "   approx_percentile(totalprice, 2, 0.5)\n" +
+                "   approx_percentile(totalprice, 2, 0.5)," +
+                "   approx_percentile(orderkey, .2, 0.5)," +
+                "   approx_percentile(totalprice, .2, 0.5)\n" +
                 "FROM orders\n" +
                 "GROUP BY orderstatus");
 
@@ -745,6 +733,8 @@ public abstract class AbstractTestQueries
             Double totalPrice = (Double) row.getField(2);
             Long orderKeyWeighted = ((Number) row.getField(3)).longValue();
             Double totalPriceWeighted = (Double) row.getField(4);
+            Long orderKeyFractionalWeighted = ((Number) row.getField(5)).longValue();
+            Double totalPriceFractionalWeighted = (Double) row.getField(6);
 
             List<Long> orderKeys = Ordering.natural().sortedCopy(orderKeyByStatus.get(status));
             List<Double> totalPrices = Ordering.natural().sortedCopy(totalPriceByStatus.get(status));
@@ -756,11 +746,17 @@ public abstract class AbstractTestQueries
             assertTrue(orderKeyWeighted >= orderKeys.get((int) (0.49 * orderKeys.size())));
             assertTrue(orderKeyWeighted <= orderKeys.get((int) (0.51 * orderKeys.size())));
 
+            assertTrue(orderKeyFractionalWeighted >= orderKeys.get((int) (0.49 * orderKeys.size())));
+            assertTrue(orderKeyFractionalWeighted <= orderKeys.get((int) (0.51 * orderKeys.size())));
+
             assertTrue(totalPrice >= totalPrices.get((int) (0.49 * totalPrices.size())));
             assertTrue(totalPrice <= totalPrices.get((int) (0.51 * totalPrices.size())));
 
             assertTrue(totalPriceWeighted >= totalPrices.get((int) (0.49 * totalPrices.size())));
             assertTrue(totalPriceWeighted <= totalPrices.get((int) (0.51 * totalPrices.size())));
+
+            assertTrue(totalPriceFractionalWeighted >= totalPrices.get((int) (0.49 * totalPrices.size())));
+            assertTrue(totalPriceFractionalWeighted <= totalPrices.get((int) (0.51 * totalPrices.size())));
         }
     }
 
@@ -2379,7 +2375,10 @@ public abstract class AbstractTestQueries
                 .addPreparedStatement("my_query", "SET SESSION foo = ?")
                 .build();
         MaterializedResult result = computeActual(session, "EXPLAIN (TYPE LOGICAL) EXECUTE my_query USING 7");
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), "SET SESSION foo = 7");
+        assertEquals(
+                getOnlyElement(result.getOnlyColumnAsSet()),
+                "SET SESSION foo = ?\n" +
+                "Parameters: [7]");
     }
 
     @Test
@@ -2434,7 +2433,9 @@ public abstract class AbstractTestQueries
     @Test
     public void testShowTables()
     {
-        Set<String> expectedTables = ImmutableSet.copyOf(transform(TpchTable.getTables(), TpchTable::getTableName));
+        Set<String> expectedTables = TpchTable.getTables().stream()
+                .map(TpchTable::getTableName)
+                .collect(toImmutableSet());
 
         MaterializedResult result = computeActual("SHOW TABLES");
         assertTrue(result.getOnlyColumnAsSet().containsAll(expectedTables));
@@ -2443,7 +2444,9 @@ public abstract class AbstractTestQueries
     @Test
     public void testShowTablesFrom()
     {
-        Set<String> expectedTables = ImmutableSet.copyOf(transform(TpchTable.getTables(), TpchTable::getTableName));
+        Set<String> expectedTables = TpchTable.getTables().stream()
+                .map(TpchTable::getTableName)
+                .collect(toImmutableSet());
 
         String catalog = getSession().getCatalog().get();
         String schema = getSession().getSchema().get();
@@ -3212,6 +3215,43 @@ public abstract class AbstractTestQueries
     }
 
     @Test
+    public void testMultipleOccurrencesOfCorrelatedSymbol()
+    {
+        @Language("SQL") String expected =
+                "VALUES " +
+                        "('AFRICA',      'MOZAMBIQUE'), " +
+                        "('AMERICA',     'UNITED STATES'), " +
+                        "('ASIA',        'VIETNAM'), " +
+                        "('EUROPE',      'UNITED KINGDOM'), " +
+                        "('MIDDLE EAST', 'SAUDI ARABIA')";
+
+        // correlated symbol used twice, no coercion
+        assertQuery(
+                "SELECT region.name, (SELECT max(name) FROM nation WHERE regionkey * 2 = region.regionkey * 2 AND regionkey = region.regionkey) FROM region",
+                expected);
+
+        // correlated symbol used twice, first occurrence coerced to double
+        assertQuery(
+                "SELECT region.name, (SELECT max(name) FROM nation WHERE CAST(regionkey AS double) = region.regionkey AND regionkey = region.regionkey) FROM region",
+                expected);
+
+        // correlated symbol used twice, second occurrence coerced to double
+        assertQuery(
+                "SELECT region.name, (SELECT max(name) FROM nation WHERE regionkey = region.regionkey AND CAST(regionkey AS double) = region.regionkey) FROM region",
+                expected);
+
+        // different coercions
+        assertQuery(
+                "SELECT region.name, " +
+                        "(SELECT max(name) FROM nation " +
+                        "WHERE CAST(regionkey AS double) = region.regionkey " + // region.regionkey coerced to double
+                        "AND regionkey = region.regionkey " +                   // no coercion
+                        "AND regionkey * 1.0 = region.regionkey) " +            // region.regionkey coerced to decimal
+                        "FROM region",
+                expected);
+    }
+
+    @Test
     public void testExistsSubquery()
     {
         // nested
@@ -3411,6 +3451,7 @@ public abstract class AbstractTestQueries
 
         // explicit LIMIT in subquery
         assertQuery("SELECT (SELECT count(*) FROM (VALUES (7,1)) t(orderkey, value) WHERE orderkey = corr_key GROUP BY value LIMIT 1) FROM (values 7) t(corr_key)");
+        // Limit(1) and non-constant output symbol of the subquery (count)
         assertQueryFails("SELECT (SELECT count(*) FROM (VALUES (7,1), (7,2)) t(orderkey, value) WHERE orderkey = corr_key GROUP BY value LIMIT 1) FROM (values 7) t(corr_key)",
                 UNSUPPORTED_CORRELATED_SUBQUERY_ERROR_MSG);
     }
@@ -3625,11 +3666,23 @@ public abstract class AbstractTestQueries
                 " WHERE n3.nationkey = n1.nationkey)" +
                 "FROM nation n1");
 
-        //count in subquery
+        // count in subquery
         assertQuery("SELECT * " +
-                        "FROM (VALUES (0),( 1), (2), (7)) AS v1(c1) " +
-                        "WHERE v1.c1 > (SELECT count(c1) FROM (VALUES (0),( 1), (2)) AS v2(c1) WHERE v1.c1 = v2.c1)",
+                        "FROM (VALUES (0), (1), (2), (7)) AS v1(c1) " +
+                        "WHERE v1.c1 > (SELECT count(c1) FROM (VALUES (0), (1), (2)) AS v2(c1) WHERE v1.c1 = v2.c1)",
                 "VALUES (2), (7)");
+
+        // count rows
+        assertQuery("SELECT (SELECT count(*) FROM (VALUES (1, true), (null, true)) inner_table(a, b) WHERE inner_table.b = outer_table.b) FROM (VALUES (true)) outer_table(b)",
+                "VALUES (2)");
+
+        // count rows
+        assertQuery("SELECT (SELECT count() FROM (VALUES (1, true), (null, true)) inner_table(a, b) WHERE inner_table.b = outer_table.b) FROM (VALUES (true)) outer_table(b)",
+                "VALUES (2)");
+
+        // count non null values
+        assertQuery("SELECT (SELECT count(a) FROM (VALUES (1, true), (null, true)) inner_table(a, b) WHERE inner_table.b = outer_table.b) FROM (VALUES (true)) outer_table(b)",
+                "VALUES (1)");
     }
 
     @Test
@@ -3842,7 +3895,7 @@ public abstract class AbstractTestQueries
     @Test
     public void testTwoCorrelatedExistsSubqueries()
     {
-        // This is simpliefied TPC-H q21
+        // This is simplified TPC-H q21
         assertQuery("SELECT\n" +
                         "  count(*) AS numwait\n" +
                         "FROM\n" +
@@ -4739,20 +4792,29 @@ public abstract class AbstractTestQueries
     @Test
     public void testExecuteWithParametersInGroupBy()
     {
-        try {
-            String query = "SELECT a + ?, count(1) FROM (VALUES 1, 2, 3, 2) t(a) GROUP BY a + ?";
-            Session session = Session.builder(getSession())
-                    .addPreparedStatement("my_query", query)
-                    .build();
-            computeActual(session, "EXECUTE my_query USING 1, 1");
-            fail("parameters in GROUP BY and SELECT should fail");
-        }
-        catch (SemanticException e) {
-            assertEquals(e.getCode(), MUST_BE_AGGREGATE_OR_GROUP_BY);
-        }
-        catch (RuntimeException e) {
-            assertEquals(e.getMessage(), "line 1:10: '(a + ?)' must be an aggregate expression or appear in GROUP BY clause");
-        }
+        String query = "SELECT a + ?, count(1) FROM (VALUES 1, 2, 3, 2) t(a) GROUP BY a + ?";
+        Session session = Session.builder(getSession())
+                .addPreparedStatement("my_query", query)
+                .build();
+
+        assertQueryFails(
+                session,
+                "EXECUTE my_query USING 1, 1",
+                "\\Qline 1:10: '(a + ?)' must be an aggregate expression or appear in GROUP BY clause\\E");
+    }
+
+    @Test
+    public void testExecuteUsingWithWithClause()
+    {
+        String query = "WITH src AS (SELECT * FROM (VALUES (1, 4),(2, 5), (3, 6)) AS t(id1, id2) WHERE id2 = ?)" +
+                " SELECT * from src WHERE id1 between ? and ?";
+
+        Session session = Session.builder(getSession())
+                .addPreparedStatement("my_query", query)
+                .build();
+        assertQuery(session,
+                "EXECUTE my_query USING 6, 0, 10",
+                "VALUES (3, 6)");
     }
 
     @Test
@@ -4764,16 +4826,9 @@ public abstract class AbstractTestQueries
     @Test
     public void testParametersNonPreparedStatement()
     {
-        try {
-            computeActual("SELECT ?, 1");
-            fail("parameters not in prepared statements should fail");
-        }
-        catch (SemanticException e) {
-            assertEquals(e.getCode(), INVALID_PARAMETER_USAGE);
-        }
-        catch (RuntimeException e) {
-            assertEquals(e.getMessage(), "line 1:1: Incorrect number of parameters: expected 1 but found 0");
-        }
+        assertQueryFails(
+                "SELECT ?, 1",
+                "line 1:1: Incorrect number of parameters: expected 1 but found 0");
     }
 
     @Test
@@ -5079,7 +5134,7 @@ public abstract class AbstractTestQueries
     }
 
     @Test
-    public void testLateralJoin()
+    public void testCorrelatedJoin()
     {
         assertQuery(
                 "SELECT name FROM nation, LATERAL (SELECT 1 WHERE false)",
@@ -5164,6 +5219,21 @@ public abstract class AbstractTestQueries
         assertQuery(
                 "SELECT * FROM (VALUES 1, 2) a(x) JOIN LATERAL(SELECT y FROM (VALUES 2, 3) b(y) WHERE y > x) c(z) ON z > 2*x",
                 "VALUES (1, 3)");
+
+        // TopN in correlated subquery
+        assertQuery(
+                "SELECT regionkey, n.name FROM region LEFT JOIN LATERAL (SELECT name FROM nation WHERE region.regionkey = regionkey ORDER BY nationkey LIMIT 2) n ON TRUE",
+                "VALUES " +
+                        "(0, 'ETHIOPIA'), " +
+                        "(0, 'ALGERIA'), " +
+                        "(1, 'BRAZIL'), " +
+                        "(1, 'ARGENTINA'), " +
+                        "(2, 'INDONESIA'), " +
+                        "(2, 'INDIA'), " +
+                        "(3, 'GERMANY'), " +
+                        "(3, 'FRANCE'), " +
+                        "(4, 'IRAN'), " +
+                        "(4, 'EGYPT')");
     }
 
     @Test

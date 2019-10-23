@@ -1,6 +1,6 @@
 <runtime>
     <!-- Target -->
-    <archive name="${project.artifactId}-${project.version}.tar.gz" />
+    <archive name="${project.artifactId}-${project.version}.tar.gz" hardLinkIncludes="**/*.jar" />
 
     <!-- Notices -->
     <fileSet to="/">
@@ -64,6 +64,12 @@
 
     <artifactSet to="plugin/hive-hadoop2">
         <artifact id="${project.groupId}:presto-hive-hadoop2:zip:${project.version}">
+            <unpack />
+        </artifact>
+    </artifactSet>
+
+    <artifactSet to="plugin/presto-iceberg">
+        <artifact id="${project.groupId}:presto-iceberg:zip:${project.version}">
             <unpack />
         </artifact>
     </artifactSet>
@@ -196,6 +202,18 @@
 
     <artifactSet to="plugin/presto-elasticsearch">
         <artifact id="${project.groupId}:presto-elasticsearch:zip:${project.version}">
+            <unpack />
+        </artifact>
+    </artifactSet>
+
+    <artifactSet to="plugin/google-sheets">
+        <artifact id="${project.groupId}:presto-google-sheets:zip:${project.version}">
+            <unpack />
+        </artifact>
+    </artifactSet>
+
+    <artifactSet to="plugin/presto-kinesis">
+        <artifact id="${project.groupId}:presto-kinesis:zip:${project.version}">
             <unpack />
         </artifact>
     </artifactSet>

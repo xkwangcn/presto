@@ -17,12 +17,12 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Primitives;
 import io.prestosql.metadata.BoundVariables;
 import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.SqlScalarFunction;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.sql.gen.lambda.BinaryFunctionInterface;
 import io.prestosql.sql.gen.lambda.UnaryFunctionInterface;
 
@@ -33,7 +33,8 @@ import static io.prestosql.operator.scalar.ScalarFunctionImplementation.Argument
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.USE_BOXED_TYPE;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.TypeSignature.arrayType;
+import static io.prestosql.spi.type.TypeSignature.functionType;
 import static io.prestosql.spi.type.TypeUtils.readNativeValue;
 import static io.prestosql.util.Reflection.methodHandle;
 
@@ -51,8 +52,12 @@ public final class ArrayReduceFunction
                 FunctionKind.SCALAR,
                 ImmutableList.of(typeVariable("T"), typeVariable("S"), typeVariable("R")),
                 ImmutableList.of(),
-                parseTypeSignature("R"),
-                ImmutableList.of(parseTypeSignature("array(T)"), parseTypeSignature("S"), parseTypeSignature("function(S,T,S)"), parseTypeSignature("function(S,R)")),
+                new TypeSignature("R"),
+                ImmutableList.of(
+                        arrayType(new TypeSignature("T")),
+                        new TypeSignature("S"),
+                        functionType(new TypeSignature("S"), new TypeSignature("T"), new TypeSignature("S")),
+                        functionType(new TypeSignature("S"), new TypeSignature("R"))),
                 false));
     }
 
@@ -75,7 +80,7 @@ public final class ArrayReduceFunction
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type inputType = boundVariables.getTypeVariable("T");
         Type intermediateType = boundVariables.getTypeVariable("S");

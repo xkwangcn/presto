@@ -13,9 +13,13 @@
  */
 package io.prestosql.metadata;
 
+import com.google.common.collect.Multimap;
 import io.airlift.slice.Slice;
 import io.prestosql.Session;
 import io.prestosql.connector.CatalogName;
+import io.prestosql.operator.aggregation.InternalAggregationFunction;
+import io.prestosql.operator.scalar.ScalarFunctionImplementation;
+import io.prestosql.operator.window.WindowFunctionSupplier;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.block.BlockEncoding;
 import io.prestosql.spi.block.BlockEncodingSerde;
@@ -24,13 +28,17 @@ import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ColumnMetadata;
 import io.prestosql.spi.connector.ConnectorCapabilities;
 import io.prestosql.spi.connector.ConnectorOutputMetadata;
+import io.prestosql.spi.connector.ConnectorTableHandle;
 import io.prestosql.spi.connector.ConnectorTableMetadata;
 import io.prestosql.spi.connector.ConnectorViewDefinition;
 import io.prestosql.spi.connector.Constraint;
 import io.prestosql.spi.connector.ConstraintApplicationResult;
 import io.prestosql.spi.connector.LimitApplicationResult;
+import io.prestosql.spi.connector.ProjectionApplicationResult;
 import io.prestosql.spi.connector.SampleType;
 import io.prestosql.spi.connector.SystemTable;
+import io.prestosql.spi.expression.ConnectorExpression;
+import io.prestosql.spi.function.OperatorType;
 import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.security.GrantInfo;
 import io.prestosql.spi.security.PrestoPrincipal;
@@ -39,9 +47,12 @@ import io.prestosql.spi.security.RoleGrant;
 import io.prestosql.spi.statistics.ComputedStatistics;
 import io.prestosql.spi.statistics.TableStatistics;
 import io.prestosql.spi.statistics.TableStatisticsMetadata;
+import io.prestosql.spi.type.ParametricType;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeId;
 import io.prestosql.spi.type.TypeSignature;
+import io.prestosql.spi.type.TypeSignatureParameter;
+import io.prestosql.sql.analyzer.TypeSignatureProvider;
 import io.prestosql.sql.planner.PartitioningHandle;
 import io.prestosql.sql.tree.QualifiedName;
 
@@ -51,6 +62,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+
+import static io.prestosql.spi.function.OperatorType.CAST;
 
 public interface Metadata
 {
@@ -219,7 +232,7 @@ public interface Metadata
     /**
      * Start a SELECT/UPDATE/INSERT/DELETE query
      */
-    void beginQuery(Session session, Set<CatalogName> connectors);
+    void beginQuery(Session session, Multimap<CatalogName, ConnectorTableHandle> connectors);
 
     /**
      * Cleanup after a query. This is the very last notification after the query finishes, regardless if it succeeds or fails.
@@ -316,6 +329,8 @@ public interface Metadata
 
     Optional<ConstraintApplicationResult<TableHandle>> applyFilter(Session session, TableHandle table, Constraint constraint);
 
+    Optional<ProjectionApplicationResult<TableHandle>> applyProjection(Session session, TableHandle table, List<ConnectorExpression> projections, Map<String, ColumnHandle> assignments);
+
     Optional<TableHandle> applySample(Session session, TableHandle table, SampleType sampleType, double sampleRatio);
 
     //
@@ -389,7 +404,18 @@ public interface Metadata
 
     Type getType(TypeSignature signature);
 
-    TypeManager getTypeManager();
+    Type fromSqlType(String sqlType);
+
+    Type getType(TypeId id);
+
+    default Type getParameterizedType(String baseTypeName, List<TypeSignatureParameter> typeParameters)
+    {
+        return getType(new TypeSignature(baseTypeName, typeParameters));
+    }
+
+    Collection<Type> getTypes();
+
+    Collection<ParametricType> getParametricTypes();
 
     void verifyComparableOrderableContract();
 
@@ -401,9 +427,33 @@ public interface Metadata
 
     List<SqlFunction> listFunctions();
 
+    FunctionInvokerProvider getFunctionInvokerProvider();
+
+    ResolvedFunction resolveFunction(QualifiedName name, List<TypeSignatureProvider> parameterTypes);
+
+    ResolvedFunction resolveOperator(OperatorType operatorType, List<? extends Type> argumentTypes)
+            throws OperatorNotFoundException;
+
+    default ResolvedFunction getCoercion(Type fromType, Type toType)
+    {
+        return getCoercion(CAST, fromType, toType);
+    }
+
+    ResolvedFunction getCoercion(OperatorType operatorType, Type fromType, Type toType);
+
+    ResolvedFunction getCoercion(QualifiedName name, Type fromType, Type toType);
+
+    /**
+     * Is the named function an aggregation function?  This does not need type parameters
+     * because overloads between aggregation and other function types are not allowed.
+     */
     boolean isAggregationFunction(QualifiedName name);
 
-    FunctionRegistry getFunctionRegistry();
+    WindowFunctionSupplier getWindowFunctionImplementation(ResolvedFunction resolvedFunction);
+
+    InternalAggregationFunction getAggregateFunctionImplementation(ResolvedFunction resolvedFunction);
+
+    ScalarFunctionImplementation getScalarFunctionImplementation(ResolvedFunction resolvedFunction);
 
     ProcedureRegistry getProcedureRegistry();
 

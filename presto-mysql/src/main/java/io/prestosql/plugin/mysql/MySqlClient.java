@@ -17,7 +17,6 @@ import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableSet;
-import com.mysql.jdbc.Driver;
 import com.mysql.jdbc.Statement;
 import io.airlift.json.ObjectMapperProvider;
 import io.airlift.slice.DynamicSliceOutput;
@@ -27,11 +26,11 @@ import io.prestosql.plugin.jdbc.BaseJdbcClient;
 import io.prestosql.plugin.jdbc.BaseJdbcConfig;
 import io.prestosql.plugin.jdbc.ColumnMapping;
 import io.prestosql.plugin.jdbc.ConnectionFactory;
-import io.prestosql.plugin.jdbc.DriverConnectionFactory;
 import io.prestosql.plugin.jdbc.JdbcColumnHandle;
 import io.prestosql.plugin.jdbc.JdbcIdentity;
 import io.prestosql.plugin.jdbc.JdbcTableHandle;
 import io.prestosql.plugin.jdbc.JdbcTypeHandle;
+import io.prestosql.plugin.jdbc.StatsCollecting;
 import io.prestosql.plugin.jdbc.WriteMapping;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.connector.ConnectorSession;
@@ -55,7 +54,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Collection;
 import java.util.Optional;
-import java.util.Properties;
 import java.util.function.BiFunction;
 
 import static com.fasterxml.jackson.core.JsonFactory.Feature.CANONICALIZE_FIELD_NAMES;
@@ -66,7 +64,6 @@ import static com.mysql.jdbc.SQLError.SQL_STATE_ER_TABLE_EXISTS_ERROR;
 import static com.mysql.jdbc.SQLError.SQL_STATE_SYNTAX_ERROR;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.prestosql.plugin.jdbc.ColumnMapping.DISABLE_PUSHDOWN;
-import static io.prestosql.plugin.jdbc.DriverConnectionFactory.basicConnectionProperties;
 import static io.prestosql.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.realWriteFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.timestampWriteFunctionUsingSqlTimestamp;
@@ -91,36 +88,10 @@ public class MySqlClient
     private final Type jsonType;
 
     @Inject
-    public MySqlClient(BaseJdbcConfig config, MySqlConfig mySqlConfig, TypeManager typeManager)
-            throws SQLException
+    public MySqlClient(BaseJdbcConfig config, @StatsCollecting ConnectionFactory connectionFactory, TypeManager typeManager)
     {
-        super(config, "`", connectionFactory(config, mySqlConfig));
+        super(config, "`", connectionFactory);
         this.jsonType = typeManager.getType(new TypeSignature(StandardTypes.JSON));
-    }
-
-    private static ConnectionFactory connectionFactory(BaseJdbcConfig config, MySqlConfig mySqlConfig)
-            throws SQLException
-    {
-        Properties connectionProperties = basicConnectionProperties(config);
-        connectionProperties.setProperty("useInformationSchema", "true");
-        connectionProperties.setProperty("nullCatalogMeansCurrent", "false");
-        connectionProperties.setProperty("useUnicode", "true");
-        connectionProperties.setProperty("characterEncoding", "utf8");
-        connectionProperties.setProperty("tinyInt1isBit", "false");
-        if (mySqlConfig.isAutoReconnect()) {
-            connectionProperties.setProperty("autoReconnect", String.valueOf(mySqlConfig.isAutoReconnect()));
-            connectionProperties.setProperty("maxReconnects", String.valueOf(mySqlConfig.getMaxReconnects()));
-        }
-        if (mySqlConfig.getConnectionTimeout() != null) {
-            connectionProperties.setProperty("connectTimeout", String.valueOf(mySqlConfig.getConnectionTimeout().toMillis()));
-        }
-
-        return new DriverConnectionFactory(
-                new Driver(),
-                config.getConnectionUrl(),
-                Optional.ofNullable(config.getUserCredentialName()),
-                Optional.ofNullable(config.getPasswordCredentialName()),
-                connectionProperties);
     }
 
     @Override
@@ -169,11 +140,10 @@ public class MySqlClient
     {
         // MySQL maps their "database" to SQL catalogs and does not have schemas
         DatabaseMetaData metadata = connection.getMetaData();
-        Optional<String> escape = Optional.ofNullable(metadata.getSearchStringEscape());
         return metadata.getTables(
                 schemaName.orElse(null),
                 null,
-                escapeNamePattern(tableName, escape).orElse(null),
+                escapeNamePattern(tableName, metadata.getSearchStringEscape()).orElse(null),
                 new String[] {"TABLE", "VIEW"});
     }
 
@@ -191,6 +161,10 @@ public class MySqlClient
         String jdbcTypeName = typeHandle.getJdbcTypeName()
                 .orElseThrow(() -> new PrestoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
 
+        Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
+        if (mapping.isPresent()) {
+            return mapping;
+        }
         if (jdbcTypeName.equalsIgnoreCase("json")) {
             return Optional.of(jsonColumnMapping());
         }
@@ -233,7 +207,7 @@ public class MySqlClient
             }
             return WriteMapping.sliceMapping(dataType, varcharWriteFunction());
         }
-        if (type.getTypeSignature().getBase().equals(StandardTypes.JSON)) {
+        if (type.equals(jsonType)) {
             return WriteMapping.sliceMapping("json", varcharWriteFunction());
         }
 

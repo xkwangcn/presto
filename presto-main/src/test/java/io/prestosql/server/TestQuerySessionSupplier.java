@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ListMultimap;
 import io.prestosql.Session;
 import io.prestosql.metadata.SessionPropertyManager;
 import io.prestosql.security.AllowAllAccessControl;
@@ -50,9 +51,12 @@ import static io.prestosql.client.PrestoHeaders.PRESTO_SESSION;
 import static io.prestosql.client.PrestoHeaders.PRESTO_SOURCE;
 import static io.prestosql.client.PrestoHeaders.PRESTO_TIME_ZONE;
 import static io.prestosql.client.PrestoHeaders.PRESTO_USER;
+import static io.prestosql.dispatcher.DispatcherConfig.HeaderSupport.WARN;
 import static io.prestosql.spi.type.TimeZoneKey.getTimeZoneKey;
 import static io.prestosql.transaction.InMemoryTransactionManager.createTestTransactionManager;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 
 public class TestQuerySessionSupplier
 {
@@ -76,12 +80,8 @@ public class TestQuerySessionSupplier
     @Test
     public void testCreateSession()
     {
-        HttpRequestSessionContext context = new HttpRequestSessionContext(TEST_REQUEST);
-        QuerySessionSupplier sessionSupplier = new QuerySessionSupplier(
-                createTestTransactionManager(),
-                new AllowAllAccessControl(),
-                new SessionPropertyManager(),
-                new SqlEnvironmentConfig());
+        HttpRequestSessionContext context = new HttpRequestSessionContext(WARN, TEST_REQUEST);
+        QuerySessionSupplier sessionSupplier = createSessionSupplier(new SqlEnvironmentConfig());
         Session session = sessionSupplier.createSession(new QueryId("test_query_id"), context);
 
         assertEquals(session.getQueryId(), new QueryId("test_query_id"));
@@ -114,7 +114,7 @@ public class TestQuerySessionSupplier
                         .put(PRESTO_USER, "testUser")
                         .build(),
                 "remoteAddress");
-        HttpRequestSessionContext context1 = new HttpRequestSessionContext(request1);
+        HttpRequestSessionContext context1 = new HttpRequestSessionContext(WARN, request1);
         assertEquals(context1.getClientTags(), ImmutableSet.of());
 
         HttpServletRequest request2 = new MockHttpServletRequest(
@@ -123,7 +123,7 @@ public class TestQuerySessionSupplier
                         .put(PRESTO_CLIENT_TAGS, "")
                         .build(),
                 "remoteAddress");
-        HttpRequestSessionContext context2 = new HttpRequestSessionContext(request2);
+        HttpRequestSessionContext context2 = new HttpRequestSessionContext(WARN, request2);
         assertEquals(context2.getClientTags(), ImmutableSet.of());
     }
 
@@ -136,7 +136,7 @@ public class TestQuerySessionSupplier
                         .put(PRESTO_CLIENT_CAPABILITIES, "foo, bar")
                         .build(),
                 "remoteAddress");
-        HttpRequestSessionContext context1 = new HttpRequestSessionContext(request1);
+        HttpRequestSessionContext context1 = new HttpRequestSessionContext(WARN, request1);
         assertEquals(context1.getClientCapabilities(), ImmutableSet.of("foo", "bar"));
 
         HttpServletRequest request2 = new MockHttpServletRequest(
@@ -144,7 +144,7 @@ public class TestQuerySessionSupplier
                         .put(PRESTO_USER, "testUser")
                         .build(),
                 "remoteAddress");
-        HttpRequestSessionContext context2 = new HttpRequestSessionContext(request2);
+        HttpRequestSessionContext context2 = new HttpRequestSessionContext(WARN, request2);
         assertEquals(context2.getClientCapabilities(), ImmutableSet.of());
     }
 
@@ -157,12 +157,8 @@ public class TestQuerySessionSupplier
                         .put(PRESTO_TIME_ZONE, "unknown_timezone")
                         .build(),
                 "testRemote");
-        HttpRequestSessionContext context = new HttpRequestSessionContext(request);
-        QuerySessionSupplier sessionSupplier = new QuerySessionSupplier(
-                createTestTransactionManager(),
-                new AllowAllAccessControl(),
-                new SessionPropertyManager(),
-                new SqlEnvironmentConfig());
+        HttpRequestSessionContext context = new HttpRequestSessionContext(WARN, request);
+        QuerySessionSupplier sessionSupplier = createSessionSupplier(new SqlEnvironmentConfig());
         sessionSupplier.createSession(new QueryId("test_query_id"), context);
     }
 
@@ -191,5 +187,80 @@ public class TestQuerySessionSupplier
 
         assertEquals(path.getParsedPath(), expected);
         assertEquals(path.toString(), Joiner.on(", ").join(expected));
+    }
+
+    @Test
+    public void testDefaultCatalogAndSchema()
+    {
+        // none specified
+        Session session = createSession(
+                ImmutableListMultimap.<String, String>builder()
+                        .put(PRESTO_USER, "testUser")
+                        .build(),
+                new SqlEnvironmentConfig());
+        assertFalse(session.getCatalog().isPresent());
+        assertFalse(session.getSchema().isPresent());
+
+        // catalog
+        session = createSession(
+                ImmutableListMultimap.<String, String>builder()
+                        .put(PRESTO_USER, "testUser")
+                        .build(),
+                new SqlEnvironmentConfig()
+                        .setDefaultCatalog("catalog"));
+        assertEquals(session.getCatalog(), Optional.of("catalog"));
+        assertFalse(session.getSchema().isPresent());
+
+        // catalog and schema
+        session = createSession(
+                ImmutableListMultimap.<String, String>builder()
+                        .put(PRESTO_USER, "testUser")
+                        .build(),
+                new SqlEnvironmentConfig()
+                        .setDefaultCatalog("catalog")
+                        .setDefaultSchema("schema"));
+        assertEquals(session.getCatalog(), Optional.of("catalog"));
+        assertEquals(session.getSchema(), Optional.of("schema"));
+
+        // only schema
+        assertThatThrownBy(() -> createSessionSupplier(new SqlEnvironmentConfig().setDefaultSchema("schema")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Default schema cannot be set if catalog is not set");
+    }
+
+    @Test
+    public void testCatalogAndSchemaOverrides()
+    {
+        // none specified
+        Session session = createSession(
+                ImmutableListMultimap.<String, String>builder()
+                        .put(PRESTO_USER, "testUser")
+                        .put(PRESTO_CATALOG, "catalog")
+                        .put(PRESTO_SCHEMA, "schema")
+                        .build(),
+                new SqlEnvironmentConfig()
+                        .setDefaultCatalog("default-catalog")
+                        .setDefaultSchema("default-schema"));
+        assertEquals(session.getCatalog(), Optional.of("catalog"));
+        assertEquals(session.getSchema(), Optional.of("schema"));
+    }
+
+    private Session createSession(ListMultimap<String, String> headers, SqlEnvironmentConfig config)
+    {
+        HttpRequestSessionContext context = new HttpRequestSessionContext(
+                WARN,
+                new MockHttpServletRequest(headers, "testRemote"));
+
+        QuerySessionSupplier sessionSupplier = createSessionSupplier(config);
+        return sessionSupplier.createSession(new QueryId("test_query_id"), context);
+    }
+
+    private static QuerySessionSupplier createSessionSupplier(SqlEnvironmentConfig config)
+    {
+        return new QuerySessionSupplier(
+                createTestTransactionManager(),
+                new AllowAllAccessControl(),
+                new SessionPropertyManager(),
+                config);
     }
 }

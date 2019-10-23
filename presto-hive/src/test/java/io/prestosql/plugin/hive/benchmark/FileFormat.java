@@ -15,12 +15,12 @@ package io.prestosql.plugin.hive.benchmark;
 
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.OutputStreamSliceOutput;
+import io.prestosql.orc.OrcReaderOptions;
 import io.prestosql.orc.OrcWriter;
 import io.prestosql.orc.OrcWriterOptions;
 import io.prestosql.orc.OrcWriterStats;
 import io.prestosql.orc.OutputStreamOrcDataSink;
 import io.prestosql.plugin.hive.FileFormatDataSourceStats;
-import io.prestosql.plugin.hive.GenericHiveRecordCursorProvider;
 import io.prestosql.plugin.hive.HdfsEnvironment;
 import io.prestosql.plugin.hive.HiveColumnHandle;
 import io.prestosql.plugin.hive.HiveCompressionCodec;
@@ -32,7 +32,7 @@ import io.prestosql.plugin.hive.HiveTypeName;
 import io.prestosql.plugin.hive.HiveTypeTranslator;
 import io.prestosql.plugin.hive.RecordFileWriter;
 import io.prestosql.plugin.hive.TypeTranslator;
-import io.prestosql.plugin.hive.benchmark.HiveFileFormatBenchmark.TestData;
+import io.prestosql.plugin.hive.benchmark.BenchmarkHiveFileFormat.TestData;
 import io.prestosql.plugin.hive.orc.OrcPageSourceFactory;
 import io.prestosql.plugin.hive.parquet.ParquetPageSourceFactory;
 import io.prestosql.plugin.hive.rcfile.RcFilePageSourceFactory;
@@ -63,11 +63,12 @@ import java.util.Optional;
 import java.util.Properties;
 
 import static io.prestosql.orc.OrcWriteValidation.OrcWriteValidationMode.BOTH;
-import static io.prestosql.plugin.hive.HdfsConfigurationInitializer.configureCompression;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static io.prestosql.plugin.hive.HiveTestUtils.TYPE_MANAGER;
+import static io.prestosql.plugin.hive.HiveTestUtils.createGenericHiveRecordCursorProvider;
 import static io.prestosql.plugin.hive.HiveType.toHiveType;
 import static io.prestosql.plugin.hive.metastore.StorageFormat.fromHiveStorageFormat;
+import static io.prestosql.plugin.hive.util.CompressionConfigUtil.configureCompression;
 import static java.util.stream.Collectors.joining;
 import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.FILE_INPUT_FORMAT;
 import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMNS;
@@ -130,7 +131,7 @@ public enum FileFormat
         @Override
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
-            HivePageSourceFactory pageSourceFactory = new OrcPageSourceFactory(TYPE_MANAGER, false, hdfsEnvironment, new FileFormatDataSourceStats());
+            HivePageSourceFactory pageSourceFactory = new OrcPageSourceFactory(false, new OrcReaderOptions(), hdfsEnvironment, new FileFormatDataSourceStats());
             return createPageSource(pageSourceFactory, session, targetFile, columnNames, columnTypes, HiveStorageFormat.ORC);
         }
 
@@ -176,7 +177,7 @@ public enum FileFormat
         @Override
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
-            HiveRecordCursorProvider cursorProvider = new GenericHiveRecordCursorProvider(hdfsEnvironment);
+            HiveRecordCursorProvider cursorProvider = createGenericHiveRecordCursorProvider(hdfsEnvironment);
             return createPageSource(cursorProvider, session, targetFile, columnNames, columnTypes, HiveStorageFormat.RCBINARY);
         }
 
@@ -196,7 +197,7 @@ public enum FileFormat
         @Override
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
-            HiveRecordCursorProvider cursorProvider = new GenericHiveRecordCursorProvider(hdfsEnvironment);
+            HiveRecordCursorProvider cursorProvider = createGenericHiveRecordCursorProvider(hdfsEnvironment);
             return createPageSource(cursorProvider, session, targetFile, columnNames, columnTypes, HiveStorageFormat.RCTEXT);
         }
 
@@ -216,7 +217,7 @@ public enum FileFormat
         @Override
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
-            HiveRecordCursorProvider cursorProvider = new GenericHiveRecordCursorProvider(hdfsEnvironment);
+            HiveRecordCursorProvider cursorProvider = createGenericHiveRecordCursorProvider(hdfsEnvironment);
             return createPageSource(cursorProvider, session, targetFile, columnNames, columnTypes, HiveStorageFormat.ORC);
         }
 
@@ -293,7 +294,7 @@ public enum FileFormat
         for (int i = 0; i < columnNames.size(); i++) {
             String columnName = columnNames.get(i);
             Type columnType = columnTypes.get(i);
-            columnHandles.add(new HiveColumnHandle(columnName, toHiveType(typeTranslator, columnType), columnType.getTypeSignature(), i, REGULAR, Optional.empty()));
+            columnHandles.add(new HiveColumnHandle(columnName, toHiveType(typeTranslator, columnType), columnType, i, REGULAR, Optional.empty()));
         }
 
         RecordCursor recordCursor = cursorProvider
@@ -327,7 +328,7 @@ public enum FileFormat
         for (int i = 0; i < columnNames.size(); i++) {
             String columnName = columnNames.get(i);
             Type columnType = columnTypes.get(i);
-            columnHandles.add(new HiveColumnHandle(columnName, toHiveType(typeTranslator, columnType), columnType.getTypeSignature(), i, REGULAR, Optional.empty()));
+            columnHandles.add(new HiveColumnHandle(columnName, toHiveType(typeTranslator, columnType), columnType, i, REGULAR, Optional.empty()));
         }
 
         return pageSourceFactory

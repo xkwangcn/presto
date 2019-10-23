@@ -14,18 +14,22 @@
 package io.prestosql.plugin.postgresql;
 
 import com.google.common.collect.ImmutableMap;
-import io.airlift.configuration.testing.ConfigAssertions;
 import org.testng.annotations.Test;
 
 import java.util.Map;
+
+import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
+import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
 
 public class TestPostgreSqlConfig
 {
     @Test
     public void testDefaults()
     {
-        ConfigAssertions.assertRecordedDefaults(ConfigAssertions.recordDefaults(PostgreSqlConfig.class)
-                .setArrayMapping(PostgreSqlConfig.ArrayMapping.DISABLED));
+        assertRecordedDefaults(recordDefaults(PostgreSqlConfig.class)
+                .setArrayMapping(PostgreSqlConfig.ArrayMapping.DISABLED)
+                .setIncludeSystemTables(false));
     }
 
     @Test
@@ -33,11 +37,13 @@ public class TestPostgreSqlConfig
     {
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
                 .put("postgresql.experimental.array-mapping", "AS_ARRAY")
+                .put("postgresql.include-system-tables", "true")
                 .build();
 
         PostgreSqlConfig expected = new PostgreSqlConfig()
-                .setArrayMapping(PostgreSqlConfig.ArrayMapping.AS_ARRAY);
+                .setArrayMapping(PostgreSqlConfig.ArrayMapping.AS_ARRAY)
+                .setIncludeSystemTables(true);
 
-        ConfigAssertions.assertFullMapping(properties, expected);
+        assertFullMapping(properties, expected);
     }
 }

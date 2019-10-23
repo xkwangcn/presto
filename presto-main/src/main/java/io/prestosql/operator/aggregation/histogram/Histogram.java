@@ -16,7 +16,7 @@ package io.prestosql.operator.aggregation.histogram;
 import com.google.common.collect.ImmutableList;
 import io.airlift.bytecode.DynamicClassLoader;
 import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.SqlAggregationFunction;
 import io.prestosql.operator.aggregation.AccumulatorCompiler;
 import io.prestosql.operator.aggregation.AggregationMetadata;
@@ -27,11 +27,12 @@ import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.BlockBuilder;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.spi.type.TypeSignatureParameter;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
+import java.util.Optional;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.metadata.Signature.comparableTypeParameter;
@@ -41,7 +42,7 @@ import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMet
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.STATE;
 import static io.prestosql.operator.aggregation.AggregationUtils.generateAggregationName;
 import static io.prestosql.spi.type.BigintType.BIGINT;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.TypeSignature.mapType;
 import static io.prestosql.util.Reflection.methodHandle;
 import static java.util.Objects.requireNonNull;
 
@@ -61,8 +62,8 @@ public class Histogram
         super(NAME,
                 ImmutableList.of(comparableTypeParameter("K")),
                 ImmutableList.of(),
-                parseTypeSignature("map(K,bigint)"),
-                ImmutableList.of(parseTypeSignature("K")));
+                mapType(new TypeSignature("K"), BIGINT.getTypeSignature()),
+                ImmutableList.of(new TypeSignature("K")));
         this.groupMode = groupMode;
     }
 
@@ -73,12 +74,12 @@ public class Histogram
     }
 
     @Override
-    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type keyType = boundVariables.getTypeVariable("K");
-        Type outputType = typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
-                TypeSignatureParameter.of(keyType.getTypeSignature()),
-                TypeSignatureParameter.of(BIGINT.getTypeSignature())));
+        Type outputType = metadata.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                TypeSignatureParameter.typeParameter(keyType.getTypeSignature()),
+                TypeSignatureParameter.typeParameter(BIGINT.getTypeSignature())));
         return generateAggregation(NAME, keyType, outputType, groupMode);
     }
 
@@ -99,6 +100,7 @@ public class Histogram
                 generateAggregationName(functionName, outputType.getTypeSignature(), inputTypes.stream().map(Type::getTypeSignature).collect(toImmutableList())),
                 createInputParameterMetadata(keyType),
                 inputFunction,
+                Optional.empty(),
                 COMBINE_FUNCTION,
                 outputFunction,
                 ImmutableList.of(new AccumulatorStateDescriptor(

@@ -16,14 +16,13 @@ package io.prestosql.operator.scalar;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.SliceOutput;
-import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.MetadataManager;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.operator.DriverYieldSignal;
 import io.prestosql.operator.project.PageProcessor;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.BlockBuilder;
+import io.prestosql.spi.type.MapType;
 import io.prestosql.spi.type.Type;
 import io.prestosql.sql.gen.ExpressionCompiler;
 import io.prestosql.sql.gen.PageFunctionCompiler;
@@ -52,6 +51,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import static io.prestosql.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.DoubleType.DOUBLE;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
@@ -95,8 +95,6 @@ public class BenchmarkJsonToMapCast
         @Setup
         public void setup()
         {
-            Signature signature = new Signature("$operator$CAST", FunctionKind.SCALAR, mapType(VARCHAR, BIGINT).getTypeSignature(), JSON.getTypeSignature());
-
             Type valueType;
             switch (valueTypeName) {
                 case "BIGINT":
@@ -112,10 +110,13 @@ public class BenchmarkJsonToMapCast
                     throw new UnsupportedOperationException();
             }
 
-            List<RowExpression> projections = ImmutableList.of(
-                    new CallExpression(signature, mapType(VARCHAR, valueType), ImmutableList.of(field(0, JSON))));
+            Metadata metadata = createTestMetadataManager();
+            MapType mapType = mapType(VARCHAR, valueType);
+            List<RowExpression> projections = ImmutableList.of(new CallExpression(
+                    metadata.getCoercion(JSON, mapType),
+                    mapType,
+                    ImmutableList.of(field(0, JSON))));
 
-            MetadataManager metadata = MetadataManager.createTestMetadataManager();
             pageProcessor = new ExpressionCompiler(metadata, new PageFunctionCompiler(metadata, 0))
                     .compilePageProcessor(Optional.empty(), projections)
                     .get();

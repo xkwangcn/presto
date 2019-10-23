@@ -13,7 +13,6 @@
  */
 package io.prestosql.tests;
 
-import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import io.prestosql.Session;
 import io.prestosql.client.IntervalDayTime;
@@ -25,6 +24,7 @@ import io.prestosql.server.testing.TestingPrestoServer;
 import io.prestosql.spi.type.ArrayType;
 import io.prestosql.spi.type.DecimalType;
 import io.prestosql.spi.type.MapType;
+import io.prestosql.spi.type.RowType;
 import io.prestosql.spi.type.SqlTimestamp;
 import io.prestosql.spi.type.SqlTimestampWithTimeZone;
 import io.prestosql.spi.type.Type;
@@ -44,17 +44,17 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
+import java.util.function.Function;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.collect.Iterables.transform;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
 import static io.prestosql.spi.type.Chars.isCharType;
@@ -73,6 +73,8 @@ import static io.prestosql.testing.MaterializedResult.DEFAULT_PRECISION;
 import static io.prestosql.type.IntervalDayTimeType.INTERVAL_DAY_TIME;
 import static io.prestosql.type.IntervalYearMonthType.INTERVAL_YEAR_MONTH;
 import static io.prestosql.type.JsonType.JSON;
+import static io.prestosql.type.UuidType.UUID;
+import static io.prestosql.util.MoreLists.mappedCopy;
 import static java.util.stream.Collectors.toList;
 
 public class TestingPrestoClient
@@ -132,7 +134,7 @@ public class TestingPrestoClient
 
             if (data.getData() != null) {
                 checkState(types.get() != null, "data received without types");
-                rows.addAll(transform(data.getData(), dataToRow(types.get())));
+                rows.addAll(mappedCopy(data.getData(), dataToRow(types.get())));
             }
         }
 
@@ -192,6 +194,9 @@ public class TestingPrestoClient
         else if (REAL.equals(type)) {
             return ((Number) value).floatValue();
         }
+        else if (UUID.equals(type)) {
+            return java.util.UUID.fromString((String) value);
+        }
         else if (type instanceof VarcharType) {
             return value;
         }
@@ -234,15 +239,22 @@ public class TestingPrestoClient
                     .collect(toList());
         }
         else if (type instanceof MapType) {
-            return ((Map<Object, Object>) value).entrySet().stream()
-                    .collect(Collectors.toMap(
-                            e -> convertToRowValue(((MapType) type).getKeyType(), e.getKey()),
-                            e -> convertToRowValue(((MapType) type).getValueType(), e.getValue())));
+            Map<Object, Object> result = new HashMap<>();
+            ((Map<Object, Object>) value)
+                    .forEach((k, v) -> result.put(
+                            convertToRowValue(((MapType) type).getKeyType(), k),
+                            convertToRowValue(((MapType) type).getValueType(), v)));
+            return result;
+        }
+        else if (type instanceof RowType) {
+            List<Type> fieldTypes = type.getTypeParameters();
+            List<Object> fieldValues = ImmutableList.copyOf(((Map<Object, Object>) value).values());
+            return dataToRow(fieldTypes).apply(fieldValues);
         }
         else if (type instanceof DecimalType) {
             return new BigDecimal((String) value);
         }
-        else if (type.getTypeSignature().getBase().equals("ObjectId")) {
+        else if (type.getBaseName().equals("ObjectId")) {
             return value;
         }
         else if (JSON.equals(type)) {

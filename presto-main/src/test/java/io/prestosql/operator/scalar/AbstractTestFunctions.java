@@ -17,8 +17,6 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.prestosql.Session;
 import io.prestosql.metadata.FunctionListBuilder;
-import io.prestosql.metadata.Metadata;
-import io.prestosql.metadata.SqlFunction;
 import io.prestosql.metadata.SqlScalarFunction;
 import io.prestosql.spi.ErrorCodeSupplier;
 import io.prestosql.spi.Plugin;
@@ -28,7 +26,6 @@ import io.prestosql.spi.type.Decimals;
 import io.prestosql.spi.type.SqlDecimal;
 import io.prestosql.spi.type.Type;
 import io.prestosql.sql.analyzer.FeaturesConfig;
-import io.prestosql.sql.analyzer.SemanticErrorCode;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 
@@ -40,7 +37,7 @@ import java.util.Map;
 import static io.airlift.testing.Closeables.closeAllRuntimeException;
 import static io.prestosql.SessionTestUtils.TEST_SESSION;
 import static io.prestosql.metadata.FunctionExtractor.extractFunctions;
-import static io.prestosql.metadata.FunctionRegistry.mangleOperatorName;
+import static io.prestosql.metadata.Signature.mangleOperatorName;
 import static io.prestosql.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.prestosql.spi.type.DecimalType.createDecimalType;
@@ -124,16 +121,6 @@ public abstract class AbstractTestFunctions
         functionAssertions.assertInvalidFunction(projection, INVALID_FUNCTION_ARGUMENT, message);
     }
 
-    protected void assertInvalidFunction(String projection, SemanticErrorCode expectedErrorCode)
-    {
-        functionAssertions.assertInvalidFunction(projection, expectedErrorCode);
-    }
-
-    protected void assertInvalidFunction(String projection, SemanticErrorCode expectedErrorCode, String message)
-    {
-        functionAssertions.assertInvalidFunction(projection, expectedErrorCode, message);
-    }
-
     protected void assertInvalidFunction(String projection, ErrorCodeSupplier expectedErrorCode)
     {
         functionAssertions.assertInvalidFunction(projection, expectedErrorCode);
@@ -173,26 +160,21 @@ public abstract class AbstractTestFunctions
 
     protected void registerScalarFunction(SqlScalarFunction sqlScalarFunction)
     {
-        Metadata metadata = functionAssertions.getMetadata();
-        metadata.getFunctionRegistry().addFunctions(ImmutableList.of(sqlScalarFunction));
+        functionAssertions.getMetadata().addFunctions(ImmutableList.of(sqlScalarFunction));
     }
 
     protected void registerScalar(Class<?> clazz)
     {
-        Metadata metadata = functionAssertions.getMetadata();
-        List<SqlFunction> functions = new FunctionListBuilder()
+        functionAssertions.getMetadata().addFunctions(new FunctionListBuilder()
                 .scalars(clazz)
-                .getFunctions();
-        metadata.getFunctionRegistry().addFunctions(functions);
+                .getFunctions());
     }
 
     protected void registerParametricScalar(Class<?> clazz)
     {
-        Metadata metadata = functionAssertions.getMetadata();
-        List<SqlFunction> functions = new FunctionListBuilder()
+        functionAssertions.getMetadata().addFunctions(new FunctionListBuilder()
                 .scalar(clazz)
-                .getFunctions();
-        metadata.getFunctionRegistry().addFunctions(functions);
+                .getFunctions());
     }
 
     protected void registerFunctions(Plugin plugin)
@@ -203,7 +185,7 @@ public abstract class AbstractTestFunctions
     protected void registerTypes(Plugin plugin)
     {
         for (Type type : plugin.getTypes()) {
-            functionAssertions.getTypeRegistry().addType(type);
+            functionAssertions.addType(type);
         }
     }
 

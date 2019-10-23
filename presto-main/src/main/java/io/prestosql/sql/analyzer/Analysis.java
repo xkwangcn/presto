@@ -18,11 +18,14 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Multimap;
+import io.prestosql.metadata.NewTableLayout;
 import io.prestosql.metadata.QualifiedObjectName;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.metadata.TableHandle;
 import io.prestosql.security.AccessControl;
+import io.prestosql.security.SecurityContext;
 import io.prestosql.spi.connector.ColumnHandle;
+import io.prestosql.spi.connector.ConnectorTableMetadata;
 import io.prestosql.spi.security.Identity;
 import io.prestosql.spi.type.Type;
 import io.prestosql.sql.tree.ExistsPredicate;
@@ -37,6 +40,7 @@ import io.prestosql.sql.tree.Node;
 import io.prestosql.sql.tree.NodeRef;
 import io.prestosql.sql.tree.Offset;
 import io.prestosql.sql.tree.OrderBy;
+import io.prestosql.sql.tree.Parameter;
 import io.prestosql.sql.tree.QuantifiedComparisonExpression;
 import io.prestosql.sql.tree.Query;
 import io.prestosql.sql.tree.QuerySpecification;
@@ -45,6 +49,7 @@ import io.prestosql.sql.tree.SampledRelation;
 import io.prestosql.sql.tree.Statement;
 import io.prestosql.sql.tree.SubqueryExpression;
 import io.prestosql.sql.tree.Table;
+import io.prestosql.transaction.TransactionId;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.Immutable;
@@ -77,7 +82,7 @@ public class Analysis
 {
     @Nullable
     private final Statement root;
-    private final List<Expression> parameters;
+    private final Map<NodeRef<Parameter>, Expression> parameters;
     private String updateType;
 
     private final Map<NodeRef<Table>, Query> namedQueries = new LinkedHashMap<>();
@@ -117,7 +122,7 @@ public class Analysis
     private final Map<NodeRef<Expression>, Type> coercions = new LinkedHashMap<>();
     private final Set<NodeRef<Expression>> typeOnlyCoercions = new LinkedHashSet<>();
     private final Map<NodeRef<Relation>, List<Type>> relationCoercions = new LinkedHashMap<>();
-    private final Map<NodeRef<FunctionCall>, Signature> functionSignature = new LinkedHashMap<>();
+    private final Map<NodeRef<FunctionCall>, ResolvedFunction> resolvedFunctions = new LinkedHashMap<>();
     private final Map<NodeRef<Identifier>, LambdaArgumentDeclaration> lambdaArgumentReferences = new LinkedHashMap<>();
 
     private final Map<Field, ColumnHandle> columns = new LinkedHashMap<>();
@@ -126,14 +131,7 @@ public class Analysis
 
     private final Map<NodeRef<QuerySpecification>, List<GroupingOperation>> groupingOperations = new LinkedHashMap<>();
 
-    // for create table
-    private Optional<QualifiedObjectName> createTableDestination = Optional.empty();
-    private Map<String, Expression> createTableProperties = ImmutableMap.of();
-    private boolean createTableAsSelectWithData = true;
-    private boolean createTableAsSelectNoOp;
-    private Optional<List<Identifier>> createTableColumnAliases = Optional.empty();
-    private Optional<String> createTableComment = Optional.empty();
-
+    private Optional<Create> create = Optional.empty();
     private Optional<Insert> insert = Optional.empty();
     private Optional<TableHandle> analyzeTarget = Optional.empty();
 
@@ -143,12 +141,10 @@ public class Analysis
     // for recursive view detection
     private final Deque<Table> tablesForView = new ArrayDeque<>();
 
-    public Analysis(@Nullable Statement root, List<Expression> parameters, boolean isDescribe)
+    public Analysis(@Nullable Statement root, Map<NodeRef<Parameter>, Expression> parameters, boolean isDescribe)
     {
-        requireNonNull(parameters);
-
         this.root = root;
-        this.parameters = ImmutableList.copyOf(requireNonNull(parameters, "parameters is null"));
+        this.parameters = ImmutableMap.copyOf(requireNonNull(parameters, "parameterMap is null"));
         this.isDescribe = isDescribe;
     }
 
@@ -165,26 +161,6 @@ public class Analysis
     public void setUpdateType(String updateType)
     {
         this.updateType = updateType;
-    }
-
-    public boolean isCreateTableAsSelectWithData()
-    {
-        return createTableAsSelectWithData;
-    }
-
-    public void setCreateTableAsSelectWithData(boolean createTableAsSelectWithData)
-    {
-        this.createTableAsSelectWithData = createTableAsSelectWithData;
-    }
-
-    public boolean isCreateTableAsSelectNoOp()
-    {
-        return createTableAsSelectNoOp;
-    }
-
-    public void setCreateTableAsSelectNoOp(boolean createTableAsSelectNoOp)
-    {
-        this.createTableAsSelectNoOp = createTableAsSelectNoOp;
     }
 
     public void setAggregates(QuerySpecification node, List<FunctionCall> aggregates)
@@ -484,14 +460,14 @@ public class Analysis
         tables.put(NodeRef.of(table), handle);
     }
 
-    public Signature getFunctionSignature(FunctionCall function)
+    public ResolvedFunction getResolvedFunction(FunctionCall function)
     {
-        return functionSignature.get(NodeRef.of(function));
+        return resolvedFunctions.get(NodeRef.of(function));
     }
 
-    public void addFunctionSignatures(Map<NodeRef<FunctionCall>, Signature> infos)
+    public void addResolvedFunction(Map<NodeRef<FunctionCall>, ResolvedFunction> infos)
     {
-        functionSignature.putAll(infos);
+        resolvedFunctions.putAll(infos);
     }
 
     public Set<NodeRef<Expression>> getColumnReferences()
@@ -545,16 +521,6 @@ public class Analysis
         return columns.get(field);
     }
 
-    public void setCreateTableDestination(QualifiedObjectName destination)
-    {
-        this.createTableDestination = Optional.of(destination);
-    }
-
-    public Optional<QualifiedObjectName> getCreateTableDestination()
-    {
-        return createTableDestination;
-    }
-
     public Optional<TableHandle> getAnalyzeTarget()
     {
         return analyzeTarget;
@@ -565,34 +531,14 @@ public class Analysis
         this.analyzeTarget = Optional.of(analyzeTarget);
     }
 
-    public void setCreateTableProperties(Map<String, Expression> createTableProperties)
+    public void setCreate(Create create)
     {
-        this.createTableProperties = ImmutableMap.copyOf(createTableProperties);
+        this.create = Optional.of(create);
     }
 
-    public Map<String, Expression> getCreateTableProperties()
+    public Optional<Create> getCreate()
     {
-        return createTableProperties;
-    }
-
-    public Optional<List<Identifier>> getColumnAliases()
-    {
-        return createTableColumnAliases;
-    }
-
-    public void setCreateTableColumnAliases(List<Identifier> createTableColumnAliases)
-    {
-        this.createTableColumnAliases = Optional.of(createTableColumnAliases);
-    }
-
-    public void setCreateTableComment(Optional<String> createTableComment)
-    {
-        this.createTableComment = requireNonNull(createTableComment);
-    }
-
-    public Optional<String> getCreateTableComment()
-    {
-        return createTableComment;
+        return create;
     }
 
     public void setInsert(Insert insert)
@@ -656,7 +602,7 @@ public class Analysis
                 .orElse(emptyList());
     }
 
-    public List<Expression> getParameters()
+    public Map<NodeRef<Parameter>, Expression> getParameters()
     {
         return parameters;
     }
@@ -706,16 +652,67 @@ public class Analysis
     }
 
     @Immutable
+    public static final class Create
+    {
+        private final Optional<QualifiedObjectName> destination;
+        private final Optional<ConnectorTableMetadata> metadata;
+        private final Optional<NewTableLayout> layout;
+        private final boolean createTableAsSelectWithData;
+        private final boolean createTableAsSelectNoOp;
+
+        public Create(
+                Optional<QualifiedObjectName> destination,
+                Optional<ConnectorTableMetadata> metadata,
+                Optional<NewTableLayout> layout,
+                boolean createTableAsSelectWithData,
+                boolean createTableAsSelectNoOp)
+        {
+            this.destination = requireNonNull(destination, "destination is null");
+            this.metadata = requireNonNull(metadata, "metadata is null");
+            this.layout = requireNonNull(layout, "layout is null");
+            this.createTableAsSelectWithData = createTableAsSelectWithData;
+            this.createTableAsSelectNoOp = createTableAsSelectNoOp;
+        }
+
+        public Optional<QualifiedObjectName> getDestination()
+        {
+            return destination;
+        }
+
+        public Optional<ConnectorTableMetadata> getMetadata()
+        {
+            return metadata;
+        }
+
+        public Optional<NewTableLayout> getLayout()
+        {
+            return layout;
+        }
+
+        public boolean isCreateTableAsSelectWithData()
+        {
+            return createTableAsSelectWithData;
+        }
+
+        public boolean isCreateTableAsSelectNoOp()
+        {
+            return createTableAsSelectNoOp;
+        }
+    }
+
+    @Immutable
     public static final class Insert
     {
         private final TableHandle target;
         private final List<ColumnHandle> columns;
+        private final Optional<NewTableLayout> newTableLayout;
 
-        public Insert(TableHandle target, List<ColumnHandle> columns)
+        public Insert(TableHandle target, List<ColumnHandle> columns, Optional<NewTableLayout> newTableLayout)
         {
             this.target = requireNonNull(target, "target is null");
             this.columns = requireNonNull(columns, "columns is null");
             checkArgument(columns.size() > 0, "No columns given to insert");
+            this.newTableLayout = requireNonNull(newTableLayout, "newTableLayout is null");
         }
 
         public List<ColumnHandle> getColumns()
@@ -726,6 +723,11 @@ public class Analysis
         public TableHandle getTarget()
         {
             return target;
+        }
+
+        public Optional<NewTableLayout> getNewTableLayout()
+        {
+            return newTableLayout;
         }
     }
 
@@ -823,9 +825,9 @@ public class Analysis
             return accessControl;
         }
 
-        public Identity getIdentity()
+        public SecurityContext getSecurityContext(TransactionId transactionId)
         {
-            return identity;
+            return new SecurityContext(transactionId, identity);
         }
 
         @Override

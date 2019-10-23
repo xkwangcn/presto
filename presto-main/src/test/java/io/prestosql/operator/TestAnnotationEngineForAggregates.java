@@ -58,7 +58,6 @@ import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.spi.type.TypeSignatureParameter;
 import io.prestosql.spi.type.VarcharType;
 import io.prestosql.type.Constraint;
-import io.prestosql.type.TypeRegistry;
 import org.testng.annotations.Test;
 
 import java.lang.invoke.MethodHandle;
@@ -68,12 +67,12 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.metadata.Signature.typeVariable;
+import static io.prestosql.operator.TypeSignatureParser.parseTypeSignature;
 import static io.prestosql.operator.aggregation.AggregationFromAnnotationsParser.parseFunctionDefinition;
 import static io.prestosql.operator.aggregation.AggregationFromAnnotationsParser.parseFunctionDefinitions;
 import static io.prestosql.spi.function.OperatorType.LESS_THAN;
 import static io.prestosql.spi.type.StandardTypes.ARRAY;
 import static io.prestosql.spi.type.StandardTypes.DOUBLE;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
@@ -81,9 +80,11 @@ import static org.testng.Assert.assertTrue;
 public class TestAnnotationEngineForAggregates
         extends TestAnnotationEngine
 {
+    private static final Metadata METADATA = createTestMetadataManager();
+
     @AggregationFunction("simple_exact_aggregate")
     @Description("Simple exact aggregate description")
-    public static class ExactAggregationFunction
+    public static final class ExactAggregationFunction
     {
         @InputFunction
         public static void input(@AggregationState NullableDoubleState state, @SqlType(DOUBLE) double value)
@@ -127,7 +128,7 @@ public class TestAnnotationEngineForAggregates
         List<AggregationMetadata.ParameterMetadata.ParameterType> expectedMetadataTypes = ImmutableList.of(AggregationMetadata.ParameterMetadata.ParameterType.STATE, AggregationMetadata.ParameterMetadata.ParameterType.INPUT_CHANNEL);
         assertTrue(implementation.getInputParameterMetadataTypes().equals(expectedMetadataTypes));
 
-        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, new TypeRegistry(), null);
+        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, METADATA);
         assertEquals(specialized.getFinalType(), DoubleType.DOUBLE);
         assertTrue(specialized.isDecomposable());
         assertEquals(specialized.name(), "simple_exact_aggregate");
@@ -135,7 +136,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("simple_exact_aggregate_aggregation_state_moved")
     @Description("Simple exact function which has @AggregationState on different than first positions")
-    public static class StateOnDifferentThanFirstPositionAggregationFunction
+    public static final class StateOnDifferentThanFirstPositionAggregationFunction
     {
         @InputFunction
         public static void input(@SqlType(DOUBLE) double value, @AggregationState NullableDoubleState state)
@@ -176,7 +177,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("no_aggregation_state_aggregate")
     @Description("Aggregate with no @AggregationState annotations")
-    public static class NotAnnotatedAggregateStateAggregationFunction
+    public static final class NotAnnotatedAggregateStateAggregationFunction
     {
         @InputFunction
         public static void input(NullableDoubleState state, @SqlType(DOUBLE) double value)
@@ -206,7 +207,7 @@ public class TestAnnotationEngineForAggregates
         List<AggregationMetadata.ParameterMetadata.ParameterType> expectedMetadataTypes = ImmutableList.of(AggregationMetadata.ParameterMetadata.ParameterType.STATE, AggregationMetadata.ParameterMetadata.ParameterType.INPUT_CHANNEL);
         assertTrue(implementation.getInputParameterMetadataTypes().equals(expectedMetadataTypes));
 
-        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, new TypeRegistry(), null);
+        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, METADATA);
         assertEquals(specialized.getFinalType(), DoubleType.DOUBLE);
         assertTrue(specialized.isDecomposable());
         assertEquals(specialized.name(), "no_aggregation_state_aggregate");
@@ -214,7 +215,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("custom_serializer_aggregate")
     @Description("Aggregate with no @AggregationState annotations")
-    public static class CustomStateSerializerAggregationFunction
+    public static final class CustomStateSerializerAggregationFunction
     {
         public static class CustomSerializer
                 extends NullableDoubleStateSerializer
@@ -257,7 +258,7 @@ public class TestAnnotationEngineForAggregates
         AggregationImplementation implementation = getOnlyElement(aggregation.getImplementations().getExactImplementations().values());
         assertTrue(implementation.getStateSerializerFactory().isPresent());
 
-        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, new TypeRegistry(), null);
+        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, METADATA);
         AccumulatorStateSerializer<?> createdSerializer = getOnlyElement(((LazyAccumulatorFactoryBinder) specialized.getAccumulatorFactoryBinder())
                 .getGenericAccumulatorFactoryBinder().getStateDescriptors()).getSerializer();
         Class<?> serializerFactory = implementation.getStateSerializerFactory().get().type().returnType();
@@ -266,7 +267,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction(value = "custom_decomposable_aggregate", decomposable = false)
     @Description("Aggregate with Decomposable=false")
-    public static class NotDecomposableAggregationFunction
+    public static final class NotDecomposableAggregationFunction
     {
         @InputFunction
         public static void input(
@@ -313,7 +314,7 @@ public class TestAnnotationEngineForAggregates
         assertTrue(aggregation.isDeterministic());
         assertEquals(aggregation.getSignature(), expectedSignature);
 
-        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, new TypeRegistry(), null);
+        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, METADATA);
         assertEquals(specialized.getFinalType(), DoubleType.DOUBLE);
         assertFalse(specialized.isDecomposable());
         assertEquals(specialized.name(), "custom_decomposable_aggregate");
@@ -321,7 +322,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("simple_generic_implementations")
     @Description("Simple aggregate with two generic implementations")
-    public static class GenericAggregationFunction
+    public static final class GenericAggregationFunction
     {
         @InputFunction
         @TypeParameter("T")
@@ -382,8 +383,8 @@ public class TestAnnotationEngineForAggregates
                 FunctionKind.AGGREGATE,
                 ImmutableList.of(typeVariable("T")),
                 ImmutableList.of(),
-                parseTypeSignature("T"),
-                ImmutableList.of(parseTypeSignature("T")),
+                new TypeSignature("T"),
+                ImmutableList.of(new TypeSignature("T")),
                 false);
 
         ParametricAggregation aggregation = parseFunctionDefinition(GenericAggregationFunction.class);
@@ -412,8 +413,7 @@ public class TestAnnotationEngineForAggregates
         InternalAggregationFunction specialized = aggregation.specialize(
                 BoundVariables.builder().setTypeVariable("T", DoubleType.DOUBLE).build(),
                 1,
-                new TypeRegistry(),
-                null);
+                METADATA);
         assertEquals(specialized.getFinalType(), DoubleType.DOUBLE);
         assertTrue(specialized.getParameterTypes().equals(ImmutableList.of(DoubleType.DOUBLE)));
         assertTrue(specialized.isDecomposable());
@@ -422,7 +422,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("block_input_aggregate")
     @Description("Simple aggregate with @BlockPosition usage")
-    public static class BlockInputAggregationFunction
+    public static final class BlockInputAggregationFunction
     {
         @InputFunction
         public static void input(
@@ -473,7 +473,7 @@ public class TestAnnotationEngineForAggregates
         List<AggregationMetadata.ParameterMetadata.ParameterType> expectedMetadataTypes = ImmutableList.of(AggregationMetadata.ParameterMetadata.ParameterType.STATE, AggregationMetadata.ParameterMetadata.ParameterType.BLOCK_INPUT_CHANNEL, AggregationMetadata.ParameterMetadata.ParameterType.BLOCK_INDEX);
         assertEquals(implementation.getInputParameterMetadataTypes(), expectedMetadataTypes);
 
-        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, new TypeRegistry(), null);
+        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, METADATA);
         assertEquals(specialized.getFinalType(), DoubleType.DOUBLE);
         assertTrue(specialized.isDecomposable());
         assertEquals(specialized.name(), "block_input_aggregate");
@@ -481,7 +481,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("implicit_specialized_aggregate")
     @Description("Simple implicit specialized aggregate")
-    public static class ImplicitSpecializedAggregationFunction
+    public static final class ImplicitSpecializedAggregationFunction
     {
         @InputFunction
         @TypeParameter("T")
@@ -542,8 +542,8 @@ public class TestAnnotationEngineForAggregates
                 FunctionKind.AGGREGATE,
                 ImmutableList.of(typeVariable("T")),
                 ImmutableList.of(),
-                parseTypeSignature("T"),
-                ImmutableList.of(new TypeSignature(ARRAY, TypeSignatureParameter.of(parseTypeSignature("T"))), parseTypeSignature("T")),
+                new TypeSignature("T"),
+                ImmutableList.of(new TypeSignature(ARRAY, TypeSignatureParameter.typeParameter(new TypeSignature("T"))), new TypeSignature("T")),
                 false);
 
         ParametricAggregation aggregation = parseFunctionDefinition(ImplicitSpecializedAggregationFunction.class);
@@ -564,7 +564,7 @@ public class TestAnnotationEngineForAggregates
         assertFalse(implementation2.hasSpecializedTypeParameters());
         assertTrue(implementation2.getInputParameterMetadataTypes().equals(expectedMetadataTypes));
 
-        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().setTypeVariable("T", DoubleType.DOUBLE).build(), 1, new TypeRegistry(), null);
+        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().setTypeVariable("T", DoubleType.DOUBLE).build(), 1, METADATA);
         assertEquals(specialized.getFinalType(), DoubleType.DOUBLE);
         assertTrue(specialized.isDecomposable());
         assertEquals(specialized.name(), "implicit_specialized_aggregate");
@@ -572,7 +572,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("explicit_specialized_aggregate")
     @Description("Simple explicit specialized aggregate")
-    public static class ExplicitSpecializedAggregationFunction
+    public static final class ExplicitSpecializedAggregationFunction
     {
         @InputFunction
         @TypeParameterSpecialization(name = "T", nativeContainerType = double.class)
@@ -634,8 +634,8 @@ public class TestAnnotationEngineForAggregates
                 FunctionKind.AGGREGATE,
                 ImmutableList.of(typeVariable("T")),
                 ImmutableList.of(),
-                parseTypeSignature("T"),
-                ImmutableList.of(new TypeSignature(ARRAY, TypeSignatureParameter.of(parseTypeSignature("T")))),
+                new TypeSignature("T"),
+                ImmutableList.of(new TypeSignature(ARRAY, TypeSignatureParameter.typeParameter(new TypeSignature("T")))),
                 false);
 
         ParametricAggregation aggregation = parseFunctionDefinition(ExplicitSpecializedAggregationFunction.class);
@@ -655,7 +655,7 @@ public class TestAnnotationEngineForAggregates
         assertFalse(implementation2.hasSpecializedTypeParameters());
         assertTrue(implementation2.getInputParameterMetadataTypes().equals(expectedMetadataTypes));
 
-        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().setTypeVariable("T", DoubleType.DOUBLE).build(), 1, new TypeRegistry(), null);
+        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().setTypeVariable("T", DoubleType.DOUBLE).build(), 1, METADATA);
         assertEquals(specialized.getFinalType(), DoubleType.DOUBLE);
         assertTrue(specialized.isDecomposable());
         assertEquals(specialized.name(), "implicit_specialized_aggregate");
@@ -663,7 +663,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("multi_output_aggregate")
     @Description("Simple multi output function aggregate generic description")
-    public static class MultiOutputAggregationFunction
+    public static final class MultiOutputAggregationFunction
     {
         @InputFunction
         public static void input(
@@ -742,7 +742,7 @@ public class TestAnnotationEngineForAggregates
         assertFalse(implementation.hasSpecializedTypeParameters());
         assertTrue(implementation.getInputParameterMetadataTypes().equals(expectedMetadataTypes));
 
-        InternalAggregationFunction specialized = aggregation1.specialize(BoundVariables.builder().build(), 1, new TypeRegistry(), null);
+        InternalAggregationFunction specialized = aggregation1.specialize(BoundVariables.builder().build(), 1, METADATA);
         assertEquals(specialized.getFinalType(), DoubleType.DOUBLE);
         assertTrue(specialized.isDecomposable());
         assertEquals(specialized.name(), "multi_output_aggregate_1");
@@ -750,7 +750,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("inject_operator_aggregate")
     @Description("Simple aggregate with operator injected")
-    public static class InjectOperatorAggregateFunction
+    public static final class InjectOperatorAggregateFunction
     {
         @InputFunction
         public static void input(
@@ -819,8 +819,7 @@ public class TestAnnotationEngineForAggregates
         List<AggregationMetadata.ParameterMetadata.ParameterType> expectedMetadataTypes = ImmutableList.of(AggregationMetadata.ParameterMetadata.ParameterType.STATE, AggregationMetadata.ParameterMetadata.ParameterType.INPUT_CHANNEL);
         assertTrue(implementation.getInputParameterMetadataTypes().equals(expectedMetadataTypes));
 
-        Metadata metadata = createTestMetadataManager();
-        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, metadata.getTypeManager(), metadata.getFunctionRegistry());
+        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().build(), 1, METADATA);
         assertEquals(specialized.getFinalType(), DoubleType.DOUBLE);
         assertTrue(specialized.isDecomposable());
         assertEquals(specialized.name(), "inject_operator_aggregate");
@@ -828,7 +827,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("inject_type_aggregate")
     @Description("Simple aggregate with type injected")
-    public static class InjectTypeAggregateFunction
+    public static final class InjectTypeAggregateFunction
     {
         @InputFunction
         @TypeParameter("T")
@@ -874,8 +873,8 @@ public class TestAnnotationEngineForAggregates
                 FunctionKind.AGGREGATE,
                 ImmutableList.of(typeVariable("T")),
                 ImmutableList.of(),
-                parseTypeSignature("T"),
-                ImmutableList.of(parseTypeSignature("T")),
+                new TypeSignature("T"),
+                ImmutableList.of(new TypeSignature("T")),
                 false);
 
         ParametricAggregation aggregation = parseFunctionDefinition(InjectTypeAggregateFunction.class);
@@ -902,8 +901,7 @@ public class TestAnnotationEngineForAggregates
         List<AggregationMetadata.ParameterMetadata.ParameterType> expectedMetadataTypes = ImmutableList.of(AggregationMetadata.ParameterMetadata.ParameterType.STATE, AggregationMetadata.ParameterMetadata.ParameterType.INPUT_CHANNEL);
         assertTrue(implementation.getInputParameterMetadataTypes().equals(expectedMetadataTypes));
 
-        Metadata metadata = createTestMetadataManager();
-        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().setTypeVariable("T", DoubleType.DOUBLE).build(), 1, metadata.getTypeManager(), metadata.getFunctionRegistry());
+        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().setTypeVariable("T", DoubleType.DOUBLE).build(), 1, METADATA);
         assertEquals(specialized.getFinalType(), DoubleType.DOUBLE);
         assertTrue(specialized.isDecomposable());
         assertEquals(specialized.name(), "inject_type_aggregate");
@@ -911,7 +909,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("inject_literal_aggregate")
     @Description("Simple aggregate with type literal")
-    public static class InjectLiteralAggregateFunction
+    public static final class InjectLiteralAggregateFunction
     {
         @InputFunction
         @LiteralParameters("x")
@@ -982,8 +980,7 @@ public class TestAnnotationEngineForAggregates
         List<AggregationMetadata.ParameterMetadata.ParameterType> expectedMetadataTypes = ImmutableList.of(AggregationMetadata.ParameterMetadata.ParameterType.STATE, AggregationMetadata.ParameterMetadata.ParameterType.INPUT_CHANNEL);
         assertTrue(implementation.getInputParameterMetadataTypes().equals(expectedMetadataTypes));
 
-        Metadata metadata = createTestMetadataManager();
-        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().setLongVariable("x", 17L).build(), 1, metadata.getTypeManager(), metadata.getFunctionRegistry());
+        InternalAggregationFunction specialized = aggregation.specialize(BoundVariables.builder().setLongVariable("x", 17L).build(), 1, METADATA);
         assertEquals(specialized.getFinalType(), VarcharType.createVarcharType(17));
         assertTrue(specialized.isDecomposable());
         assertEquals(specialized.name(), "inject_literal_aggregate");
@@ -991,7 +988,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("parametric_aggregate_long_constraint")
     @Description("Parametric aggregate with parametric type returned")
-    public static class LongConstraintAggregateFunction
+    public static final class LongConstraintAggregateFunction
     {
         @InputFunction
         @LiteralParameters({"x", "y", "z"})
@@ -1053,13 +1050,14 @@ public class TestAnnotationEngineForAggregates
         List<AggregationMetadata.ParameterMetadata.ParameterType> expectedMetadataTypes = ImmutableList.of(AggregationMetadata.ParameterMetadata.ParameterType.STATE, AggregationMetadata.ParameterMetadata.ParameterType.INPUT_CHANNEL, AggregationMetadata.ParameterMetadata.ParameterType.INPUT_CHANNEL);
         assertTrue(implementation.getInputParameterMetadataTypes().equals(expectedMetadataTypes));
 
-        Metadata metadata = createTestMetadataManager();
         InternalAggregationFunction specialized = aggregation.specialize(
                 BoundVariables.builder()
                         .setLongVariable("x", 17L)
                         .setLongVariable("y", 13L)
                         .setLongVariable("z", 30L)
-                        .build(), 2, metadata.getTypeManager(), metadata.getFunctionRegistry());
+                        .build(),
+                2,
+                METADATA);
         assertEquals(specialized.getFinalType(), VarcharType.createVarcharType(30));
         assertTrue(specialized.isDecomposable());
         assertEquals(specialized.name(), "parametric_aggregate_long_constraint");
@@ -1067,7 +1065,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("fixed_type_parameter_injection")
     @Description("Simple aggregate with fixed parameter type injected")
-    public static class FixedTypeParameterInjectionAggregateFunction
+    public static final class FixedTypeParameterInjectionAggregateFunction
     {
         @InputFunction
         public static void input(
@@ -1127,7 +1125,7 @@ public class TestAnnotationEngineForAggregates
 
     @AggregationFunction("partially_fixed_type_parameter_injection")
     @Description("Simple aggregate with fixed parameter type injected")
-    public static class PartiallyFixedTypeParameterInjectionAggregateFunction
+    public static final class PartiallyFixedTypeParameterInjectionAggregateFunction
     {
         @InputFunction
         @TypeParameter("T1")
@@ -1193,8 +1191,7 @@ public class TestAnnotationEngineForAggregates
         InternalAggregationFunction specialized = aggregation.specialize(
                 BoundVariables.builder().setTypeVariable("T1", DoubleType.DOUBLE).setTypeVariable("T2", DoubleType.DOUBLE).build(),
                 1,
-                new TypeRegistry(),
-                null);
+                METADATA);
         assertEquals(specialized.getFinalType(), DoubleType.DOUBLE);
         assertTrue(specialized.getParameterTypes().equals(ImmutableList.of(DoubleType.DOUBLE)));
         assertTrue(specialized.isDecomposable());

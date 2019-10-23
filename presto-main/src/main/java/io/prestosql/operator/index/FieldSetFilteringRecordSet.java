@@ -16,11 +16,9 @@ package io.prestosql.operator.index;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.spi.connector.RecordCursor;
 import io.prestosql.spi.connector.RecordSet;
-import io.prestosql.spi.function.OperatorType;
-import io.prestosql.spi.type.BooleanType;
 import io.prestosql.spi.type.Type;
 
 import java.lang.invoke.MethodHandle;
@@ -30,7 +28,7 @@ import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Throwables.throwIfUnchecked;
-import static io.prestosql.metadata.Signature.internalOperator;
+import static io.prestosql.spi.function.OperatorType.EQUAL;
 import static java.lang.Boolean.TRUE;
 import static java.util.Objects.requireNonNull;
 
@@ -43,9 +41,9 @@ public class FieldSetFilteringRecordSet
     private final RecordSet delegate;
     private final List<Set<Field>> fieldSets;
 
-    public FieldSetFilteringRecordSet(FunctionRegistry functionRegistry, RecordSet delegate, List<Set<Integer>> fieldSets)
+    public FieldSetFilteringRecordSet(Metadata metadata, RecordSet delegate, List<Set<Integer>> fieldSets)
     {
-        requireNonNull(functionRegistry, "functionRegistry is null");
+        requireNonNull(metadata, "metadata is null");
         this.delegate = requireNonNull(delegate, "delegate is null");
 
         ImmutableList.Builder<Set<Field>> fieldSetsBuilder = ImmutableList.builder();
@@ -55,7 +53,7 @@ public class FieldSetFilteringRecordSet
             for (int field : fieldSet) {
                 fieldSetBuilder.add(new Field(
                         field,
-                        functionRegistry.getScalarFunctionImplementation(internalOperator(OperatorType.EQUAL, BooleanType.BOOLEAN, ImmutableList.of(columnTypes.get(field), columnTypes.get(field)))).getMethodHandle()));
+                        metadata.getScalarFunctionImplementation(metadata.resolveOperator(EQUAL, ImmutableList.of(columnTypes.get(field), columnTypes.get(field)))).getMethodHandle()));
             }
             fieldSetsBuilder.add(fieldSetBuilder.build());
         }

@@ -17,11 +17,11 @@ import com.google.common.collect.ImmutableList;
 import io.prestosql.annotation.UsedByGeneratedCode;
 import io.prestosql.metadata.BoundVariables;
 import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.SqlScalarFunction;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.sql.gen.lambda.UnaryFunctionInterface;
 
 import java.lang.invoke.MethodHandle;
@@ -31,7 +31,7 @@ import static io.prestosql.metadata.Signature.typeVariable;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.functionTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.USE_BOXED_TYPE;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.TypeSignature.functionType;
 import static io.prestosql.util.Reflection.methodHandle;
 
 /**
@@ -51,8 +51,10 @@ public final class ApplyFunction
                 FunctionKind.SCALAR,
                 ImmutableList.of(typeVariable("T"), typeVariable("U")),
                 ImmutableList.of(),
-                parseTypeSignature("U"),
-                ImmutableList.of(parseTypeSignature("T"), parseTypeSignature("function(T,U)")),
+                new TypeSignature("U"),
+                ImmutableList.of(
+                        new TypeSignature("T"),
+                        functionType(new TypeSignature("T"), new TypeSignature("U"))),
                 false));
     }
 
@@ -75,7 +77,7 @@ public final class ApplyFunction
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type argumentType = boundVariables.getTypeVariable("T");
         Type returnType = boundVariables.getTypeVariable("U");

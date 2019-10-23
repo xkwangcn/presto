@@ -20,7 +20,7 @@ import io.prestosql.sql.tree.Statement;
 import org.testng.annotations.Test;
 
 import java.io.IOException;
-import java.util.Optional;
+import java.io.UncheckedIOException;
 
 import static com.google.common.base.Strings.repeat;
 import static io.prestosql.sql.parser.ParsingOptions.DecimalLiteralTreatment.AS_DOUBLE;
@@ -92,6 +92,7 @@ public class TestStatementBuilder
                 ", rank() over (partition by depname order by salary desc)\n" +
                 ", sum(salary) over (order by salary rows unbounded preceding)\n" +
                 ", sum(salary) over (partition by depname order by salary rows between current row and 3 following)\n" +
+                ", sum(salary) over (partition by depname order by salary rows between current row and empno following)\n" +
                 ", sum(salary) over (partition by depname range unbounded preceding)\n" +
                 ", sum(salary) over (rows between 2 preceding and unbounded following)\n" +
                 "from emp");
@@ -274,7 +275,6 @@ public class TestStatementBuilder
 
     @Test
     public void testStatementBuilderTpch()
-            throws Exception
     {
         printTpchQuery(1, 3);
         printTpchQuery(2, 33, "part type like", "region name");
@@ -317,7 +317,7 @@ public class TestStatementBuilder
         println(statement.toString());
         println("");
 
-        println(SqlFormatter.formatSql(statement, Optional.empty()));
+        println(SqlFormatter.formatSql(statement));
         println("");
         assertFormattedSql(SQL_PARSER, statement);
 
@@ -328,7 +328,7 @@ public class TestStatementBuilder
     private static void assertSqlFormatter(String expression, String formatted)
     {
         Expression originalExpression = SQL_PARSER.createExpression(expression, new ParsingOptions());
-        String real = SqlFormatter.formatSql(originalExpression, Optional.empty());
+        String real = SqlFormatter.formatSql(originalExpression);
         assertEquals(real, formatted);
     }
 
@@ -340,13 +340,11 @@ public class TestStatementBuilder
     }
 
     private static String getTpchQuery(int q)
-            throws IOException
     {
         return readResource("tpch/queries/" + q + ".sql");
     }
 
     private static void printTpchQuery(int query, Object... values)
-            throws IOException
     {
         String sql = getTpchQuery(query);
 
@@ -361,9 +359,13 @@ public class TestStatementBuilder
     }
 
     private static String readResource(String name)
-            throws IOException
     {
-        return Resources.toString(Resources.getResource(name), UTF_8);
+        try {
+            return Resources.toString(Resources.getResource(name), UTF_8);
+        }
+        catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     private static String fixTpchQuery(String s)

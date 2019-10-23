@@ -16,9 +16,11 @@ package io.prestosql.server;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import io.airlift.log.Logger;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.prestosql.Session.ResourceEstimateBuilder;
+import io.prestosql.dispatcher.DispatcherConfig.HeaderSupport;
 import io.prestosql.spi.security.Identity;
 import io.prestosql.spi.security.SelectedRole;
 import io.prestosql.spi.session.ResourceEstimates;
@@ -50,6 +52,7 @@ import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.net.HttpHeaders.USER_AGENT;
+import static com.google.common.net.HttpHeaders.X_FORWARDED_FOR;
 import static io.prestosql.client.PrestoHeaders.PRESTO_CATALOG;
 import static io.prestosql.client.PrestoHeaders.PRESTO_CLIENT_CAPABILITIES;
 import static io.prestosql.client.PrestoHeaders.PRESTO_CLIENT_INFO;
@@ -67,12 +70,16 @@ import static io.prestosql.client.PrestoHeaders.PRESTO_TIME_ZONE;
 import static io.prestosql.client.PrestoHeaders.PRESTO_TRACE_TOKEN;
 import static io.prestosql.client.PrestoHeaders.PRESTO_TRANSACTION_ID;
 import static io.prestosql.client.PrestoHeaders.PRESTO_USER;
+import static io.prestosql.dispatcher.DispatcherConfig.HeaderSupport.ACCEPT;
+import static io.prestosql.dispatcher.DispatcherConfig.HeaderSupport.IGNORE;
 import static io.prestosql.sql.parser.ParsingOptions.DecimalLiteralTreatment.AS_DOUBLE;
 import static java.lang.String.format;
 
 public final class HttpRequestSessionContext
         implements SessionContext
 {
+    private static final Logger log = Logger.get(HttpRequestSessionContext.class);
+
     private static final Splitter DOT_SPLITTER = Splitter.on('.');
 
     private final String catalog;
@@ -100,7 +107,7 @@ public final class HttpRequestSessionContext
     private final boolean clientTransactionSupport;
     private final String clientInfo;
 
-    public HttpRequestSessionContext(HttpServletRequest servletRequest)
+    public HttpRequestSessionContext(HeaderSupport forwardedHeaderSupport, HttpServletRequest servletRequest)
             throws WebApplicationException
     {
         catalog = trimEmptyToNull(servletRequest.getHeader(PRESTO_CATALOG));
@@ -110,16 +117,16 @@ public final class HttpRequestSessionContext
 
         String user = trimEmptyToNull(servletRequest.getHeader(PRESTO_USER));
         assertRequest(user != null, "User must be set");
-        identity = new Identity(
-                user,
-                Optional.ofNullable(servletRequest.getUserPrincipal()),
-                parseRoleHeaders(servletRequest),
-                parseExtraCredentials(servletRequest));
+        identity = Identity.forUser(user)
+                .withPrincipal(Optional.ofNullable(servletRequest.getUserPrincipal()))
+                .withRoles(parseRoleHeaders(servletRequest))
+                .withExtraCredentials(parseExtraCredentials(servletRequest))
+                .build();
 
         source = servletRequest.getHeader(PRESTO_SOURCE);
         traceToken = Optional.ofNullable(trimEmptyToNull(servletRequest.getHeader(PRESTO_TRACE_TOKEN)));
         userAgent = servletRequest.getHeader(USER_AGENT);
-        remoteUserAddress = servletRequest.getRemoteAddr();
+        remoteUserAddress = getRemoteUserAddress(forwardedHeaderSupport, servletRequest.getHeader(X_FORWARDED_FOR), servletRequest.getRemoteAddr());
         timeZoneId = servletRequest.getHeader(PRESTO_TIME_ZONE);
         language = servletRequest.getHeader(PRESTO_LANGUAGE);
         clientInfo = servletRequest.getHeader(PRESTO_CLIENT_INFO);
@@ -165,6 +172,34 @@ public final class HttpRequestSessionContext
         String transactionIdHeader = servletRequest.getHeader(PRESTO_TRANSACTION_ID);
         clientTransactionSupport = transactionIdHeader != null;
         transactionId = parseTransactionId(transactionIdHeader);
+    }
+
+    private static String getRemoteUserAddress(HeaderSupport forwardedHeaderSupport, String xForwarderForHeader, String remoteAddess)
+    {
+        // TODO support 'Forwarder' header (here & where other X-Forwarder-* are supported)
+
+        switch (forwardedHeaderSupport) {
+            case WARN:
+                if (xForwarderForHeader != null) {
+                    log.warn("Unsupported HTTP header '%s'. Presto needs to be explicitly configured to %s or %s this header", X_FORWARDED_FOR, IGNORE, ACCEPT);
+                }
+                return remoteAddess;
+
+            case IGNORE:
+                return remoteAddess;
+
+            case ACCEPT:
+                if (xForwarderForHeader != null) {
+                    List<String> addresses = Splitter.on(",").trimResults().omitEmptyStrings().splitToList(xForwarderForHeader);
+                    if (!addresses.isEmpty()) {
+                        return addresses.get(0);
+                    }
+                }
+                return remoteAddess;
+
+            default:
+                throw new UnsupportedOperationException("Unexpected forwardedHeaderSupport: " + forwardedHeaderSupport);
+        }
     }
 
     @Override
@@ -421,7 +456,7 @@ public final class HttpRequestSessionContext
 
     private static WebApplicationException badRequest(String message)
     {
-        throw new WebApplicationException(Response
+        throw new WebApplicationException(message, Response
                 .status(Status.BAD_REQUEST)
                 .type(MediaType.TEXT_PLAIN)
                 .entity(message)

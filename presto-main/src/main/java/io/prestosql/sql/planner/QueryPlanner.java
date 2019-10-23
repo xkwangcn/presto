@@ -52,6 +52,7 @@ import io.prestosql.sql.tree.FetchFirst;
 import io.prestosql.sql.tree.FieldReference;
 import io.prestosql.sql.tree.FrameBound;
 import io.prestosql.sql.tree.FunctionCall;
+import io.prestosql.sql.tree.FunctionCall.NullTreatment;
 import io.prestosql.sql.tree.GroupingOperation;
 import io.prestosql.sql.tree.LambdaArgumentDeclaration;
 import io.prestosql.sql.tree.LambdaExpression;
@@ -62,11 +63,10 @@ import io.prestosql.sql.tree.OrderBy;
 import io.prestosql.sql.tree.Query;
 import io.prestosql.sql.tree.QuerySpecification;
 import io.prestosql.sql.tree.SortItem;
-import io.prestosql.sql.tree.SortItem.NullOrdering;
-import io.prestosql.sql.tree.SortItem.Ordering;
 import io.prestosql.sql.tree.SymbolReference;
 import io.prestosql.sql.tree.Window;
 import io.prestosql.sql.tree.WindowFrame;
+import io.prestosql.type.TypeCoercion;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -87,6 +87,7 @@ import static io.prestosql.SystemSessionProperties.isSkipRedundantSort;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.VarbinaryType.VARBINARY;
 import static io.prestosql.sql.NodeUtils.getSortItemsFromOrderBy;
+import static io.prestosql.sql.planner.OrderingScheme.sortItemToSortOrder;
 import static io.prestosql.sql.planner.plan.AggregationNode.groupingSets;
 import static io.prestosql.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static java.util.Objects.requireNonNull;
@@ -98,6 +99,7 @@ class QueryPlanner
     private final PlanNodeIdAllocator idAllocator;
     private final Map<NodeRef<LambdaArgumentDeclaration>, Symbol> lambdaDeclarationToSymbolMap;
     private final Metadata metadata;
+    private final TypeCoercion typeCoercion;
     private final Session session;
     private final SubqueryPlanner subqueryPlanner;
 
@@ -121,6 +123,7 @@ class QueryPlanner
         this.idAllocator = idAllocator;
         this.lambdaDeclarationToSymbolMap = lambdaDeclarationToSymbolMap;
         this.metadata = metadata;
+        this.typeCoercion = new TypeCoercion(metadata::getType);
         this.session = session;
         this.subqueryPlanner = new SubqueryPlanner(analysis, symbolAllocator, idAllocator, lambdaDeclarationToSymbolMap, metadata, session);
     }
@@ -232,7 +235,7 @@ class QueryPlanner
         TranslationMap translations = new TranslationMap(relationPlan, analysis, lambdaDeclarationToSymbolMap);
         translations.setFieldMappings(relationPlan.getFieldMappings());
 
-        PlanBuilder builder = new PlanBuilder(translations, relationPlan.getRoot(), analysis.getParameters());
+        PlanBuilder builder = new PlanBuilder(translations, relationPlan.getRoot());
 
         if (node.getWhere().isPresent()) {
             builder = filter(builder, node.getWhere().get(), node);
@@ -301,7 +304,7 @@ class QueryPlanner
         // This makes it possible to rewrite FieldOrExpressions that reference fields from the FROM clause directly
         translations.setFieldMappings(relationPlan.getFieldMappings());
 
-        return new PlanBuilder(translations, relationPlan.getRoot(), analysis.getParameters());
+        return new PlanBuilder(translations, relationPlan.getRoot());
     }
 
     private RelationPlan planImplicitTable()
@@ -354,8 +357,7 @@ class QueryPlanner
         return new PlanBuilder(outputTranslations, new ProjectNode(
                 idAllocator.getNextId(),
                 subPlan.getRoot(),
-                projections.build()),
-                analysis.getParameters());
+                projections.build()));
     }
 
     private Map<Symbol, Expression> coerce(Iterable<? extends Expression> expressions, PlanBuilder subPlan, TranslationMap translations)
@@ -372,7 +374,7 @@ class QueryPlanner
                         rewritten,
                         coercion.getTypeSignature().toString(),
                         false,
-                        metadata.getTypeManager().isTypeOnlyCoercion(type, coercion));
+                        typeCoercion.isTypeOnlyCoercion(type, coercion));
             }
             projections.put(symbol, rewritten);
             translations.put(expression, symbol);
@@ -406,8 +408,7 @@ class QueryPlanner
         return new PlanBuilder(translations, new ProjectNode(
                 idAllocator.getNextId(),
                 subPlan.getRoot(),
-                projections.build()),
-                analysis.getParameters());
+                projections.build()));
     }
 
     private PlanBuilder explicitCoercionSymbols(PlanBuilder subPlan, Iterable<Symbol> alreadyCoerced, Iterable<? extends Expression> uncoerced)
@@ -422,8 +423,7 @@ class QueryPlanner
         return new PlanBuilder(translations, new ProjectNode(
                 idAllocator.getNextId(),
                 subPlan.getRoot(),
-                assignments),
-                analysis.getParameters());
+                assignments));
     }
 
     private PlanBuilder aggregate(PlanBuilder subPlan, QuerySpecification node)
@@ -534,7 +534,7 @@ class QueryPlanner
         if (groupingSets.size() > 1) {
             groupIdSymbol = Optional.of(symbolAllocator.newSymbol("groupId", BIGINT));
             GroupIdNode groupId = new GroupIdNode(idAllocator.getNextId(), subPlan.getRoot(), groupingSets, groupingSetMappings, aggregationArguments, groupIdSymbol.get());
-            subPlan = new PlanBuilder(groupingTranslations, groupId, analysis.getParameters());
+            subPlan = new PlanBuilder(groupingTranslations, groupId);
         }
         else {
             Assignments.Builder assignments = Assignments.builder();
@@ -542,7 +542,7 @@ class QueryPlanner
             groupingSetMappings.forEach((key, value) -> assignments.put(key, value.toSymbolReference()));
 
             ProjectNode project = new ProjectNode(idAllocator.getNextId(), subPlan.getRoot(), assignments.build());
-            subPlan = new PlanBuilder(groupingTranslations, project, analysis.getParameters());
+            subPlan = new PlanBuilder(groupingTranslations, project);
         }
 
         TranslationMap aggregationTranslations = new TranslationMap(subPlan.getRelationPlan(), analysis, lambdaDeclarationToSymbolMap);
@@ -563,7 +563,14 @@ class QueryPlanner
             }
             aggregationTranslations.put(aggregate, newSymbol);
 
-            aggregationsBuilder.put(newSymbol, new Aggregation((FunctionCall) rewritten, analysis.getFunctionSignature(aggregate), Optional.empty()));
+            FunctionCall functionCall = (FunctionCall) rewritten;
+            aggregationsBuilder.put(newSymbol, new Aggregation(
+                    analysis.getResolvedFunction(aggregate),
+                    functionCall.getArguments(),
+                    functionCall.isDistinct(),
+                    functionCall.getFilter().map(Symbol::from),
+                    functionCall.getOrderBy().map(OrderingScheme::fromOrderBy),
+                    Optional.empty()));
         }
         Map<Symbol, Aggregation> aggregations = aggregationsBuilder.build();
 
@@ -594,7 +601,7 @@ class QueryPlanner
                 Optional.empty(),
                 groupIdSymbol);
 
-        subPlan = new PlanBuilder(aggregationTranslations, aggregationNode, analysis.getParameters());
+        subPlan = new PlanBuilder(aggregationTranslations, aggregationNode);
 
         // 3. Post-projection
         // Add back the implicit casts that we removed in 2.a
@@ -684,13 +691,13 @@ class QueryPlanner
                         rewritten,
                         coercion.getTypeSignature().toString(),
                         false,
-                        metadata.getTypeManager().isTypeOnlyCoercion(analysis.getType(groupingOperation), coercion));
+                        typeCoercion.isTypeOnlyCoercion(analysis.getType(groupingOperation), coercion));
             }
             projections.put(symbol, rewritten);
             newTranslations.put(groupingOperation, symbol);
         }
 
-        return new PlanBuilder(newTranslations, new ProjectNode(idAllocator.getNextId(), subPlan.getRoot(), projections.build()), analysis.getParameters());
+        return new PlanBuilder(newTranslations, new ProjectNode(idAllocator.getNextId(), subPlan.getRoot(), projections.build()));
     }
 
     private PlanBuilder window(PlanBuilder subPlan, OrderBy node)
@@ -736,7 +743,9 @@ class QueryPlanner
             ImmutableList.Builder<Expression> inputs = ImmutableList.<Expression>builder()
                     .addAll(windowFunction.getArguments())
                     .addAll(window.getPartitionBy())
-                    .addAll(Iterables.transform(getSortItemsFromOrderBy(window.getOrderBy()), SortItem::getSortKey));
+                    .addAll(getSortItemsFromOrderBy(window.getOrderBy()).stream()
+                            .map(SortItem::getSortKey)
+                            .iterator());
 
             if (frameStart != null) {
                 inputs.add(frameStart);
@@ -758,7 +767,7 @@ class QueryPlanner
             for (SortItem item : getSortItemsFromOrderBy(window.getOrderBy())) {
                 Symbol symbol = subPlan.translate(item.getSortKey());
                 // don't override existing keys, i.e. when "ORDER BY a ASC, a DESC" is specified
-                orderings.putIfAbsent(symbol, toSortOrder(item));
+                orderings.putIfAbsent(symbol, sortItemToSortOrder(item));
             }
 
             // Rewrite frame bounds in terms of pre-projected inputs
@@ -803,8 +812,14 @@ class QueryPlanner
             Symbol newSymbol = symbolAllocator.newSymbol(rewritten, analysis.getType(windowFunction));
             outputTranslations.put(windowFunction, newSymbol);
 
+            NullTreatment nullTreatment = windowFunction.getNullTreatment()
+                    .orElse(NullTreatment.RESPECT);
+
             WindowNode.Function function = new WindowNode.Function(
-                    (FunctionCall) rewritten, analysis.getFunctionSignature(windowFunction), frame);
+                    analysis.getResolvedFunction(windowFunction),
+                    ((FunctionCall) rewritten).getArguments(),
+                    frame,
+                    nullTreatment == NullTreatment.IGNORE);
 
             List<Symbol> sourceSymbols = subPlan.getRoot().getOutputSymbols();
             ImmutableList.Builder<Symbol> orderBySymbols = ImmutableList.builder();
@@ -825,8 +840,7 @@ class QueryPlanner
                             ImmutableMap.of(newSymbol, function),
                             Optional.empty(),
                             ImmutableSet.of(),
-                            0),
-                    analysis.getParameters());
+                            0));
 
             if (needCoercion) {
                 subPlan = explicitCoercionSymbols(subPlan, sourceSymbols, ImmutableList.of(windowFunction));
@@ -878,7 +892,7 @@ class QueryPlanner
             SortItem sortItem = sortItems.next();
             if (!orderings.containsKey(symbol)) {
                 orderBySymbols.add(symbol);
-                orderings.put(symbol, toSortOrder(sortItem));
+                orderings.put(symbol, sortItemToSortOrder(sortItem));
             }
         }
         return Optional.of(new OrderingScheme(orderBySymbols.build(), orderings));
@@ -941,25 +955,5 @@ class QueryPlanner
         return stream(expressions)
                 .distinct()
                 .collect(toImmutableMap(expression -> expression, builder::translate));
-    }
-
-    public static SortOrder toSortOrder(SortItem sortItem)
-    {
-        if (sortItem.getOrdering() == Ordering.ASCENDING) {
-            if (sortItem.getNullOrdering() == NullOrdering.FIRST) {
-                return SortOrder.ASC_NULLS_FIRST;
-            }
-            else {
-                return SortOrder.ASC_NULLS_LAST;
-            }
-        }
-        else {
-            if (sortItem.getNullOrdering() == NullOrdering.FIRST) {
-                return SortOrder.DESC_NULLS_FIRST;
-            }
-            else {
-                return SortOrder.DESC_NULLS_LAST;
-            }
-        }
     }
 }

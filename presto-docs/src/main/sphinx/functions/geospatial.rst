@@ -68,6 +68,10 @@ Constructors
 
     Returns a geometry type object from WKB representation.
 
+.. function:: geometry_from_hadoop_shape(varbinary) -> Geometry
+
+    Returns a geometry type object from Spatial Framework for Hadoop representation.
+
 .. function:: ST_LineFromText(varchar) -> LineString
 
     Returns a geometry type linestring object from WKT representation.
@@ -292,6 +296,11 @@ Accessors
     Returns the length of a linestring or multi-linestring using Euclidean measurement on a
     two dimensional plane (based on spatial ref) in projected units.
 
+.. function:: ST_Length(SphericalGeography) -> double
+
+    Returns the length of a linestring or multi-linestring on a spherical model of the Earth.
+    This is equivalent to the sum of great-circle distances between adjacent points on the linestring.
+
 .. function:: ST_PointN(LineString, index) -> Point
 
     Returns the vertex of a linestring at a given index (indices start at 1).
@@ -342,7 +351,7 @@ Accessors
 
     Return the Y coordinate of the point.
 
-.. function:: ST_InteriorRings(Geometry) -> Geometry
+.. function:: ST_InteriorRings(Geometry) -> array(Geometry)
 
    Returns an array of all interior rings found in the input geometry, or an empty
    array if the polygon has no interior rings. Returns null if the input geometry
@@ -356,7 +365,7 @@ Accessors
     for single geometries returns 1,
     for empty geometries returns 0.
 
-.. function:: ST_Geometries(Geometry) -> Geometry
+.. function:: ST_Geometries(Geometry) -> array(Geometry)
 
    Returns an array of geometries in the specified collection. Returns a one-element array
    if the input geometry is not a multi-geometry. Returns null if input geometry is empty.

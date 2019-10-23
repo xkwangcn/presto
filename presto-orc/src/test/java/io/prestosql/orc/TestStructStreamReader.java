@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.BlockBuilder;
@@ -27,10 +28,8 @@ import io.prestosql.spi.type.NamedTypeSignature;
 import io.prestosql.spi.type.RowFieldName;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
 import io.prestosql.spi.type.TypeSignatureParameter;
 import io.prestosql.testing.TestingConnectorSession;
-import io.prestosql.type.TypeRegistry;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
@@ -46,7 +45,9 @@ import java.util.Optional;
 
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.prestosql.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.orc.OrcTester.HIVE_STORAGE_TIME_ZONE;
+import static io.prestosql.orc.OrcTester.READER_OPTIONS;
 import static io.prestosql.orc.OrcWriteValidation.OrcWriteValidationMode.BOTH;
 import static io.prestosql.orc.TestingOrcPredicate.ORC_ROW_GROUP_SIZE;
 import static io.prestosql.orc.TestingOrcPredicate.ORC_STRIPE_SIZE;
@@ -59,7 +60,7 @@ import static org.testng.Assert.assertNull;
 @Test(singleThreaded = true)
 public class TestStructStreamReader
 {
-    private static final TypeManager TYPE_MANAGER = new TypeRegistry();
+    private static final Metadata METADATA = createTestMetadataManager();
 
     private static final Type TEST_DATA_TYPE = VARCHAR;
 
@@ -260,9 +261,8 @@ public class TestStructStreamReader
     private RowBlock read(TempFile tempFile, Type readerType)
             throws IOException
     {
-        DataSize dataSize = new DataSize(1, MEGABYTE);
-        OrcDataSource orcDataSource = new FileOrcDataSource(tempFile.getFile(), dataSize, dataSize, dataSize, true);
-        OrcReader orcReader = new OrcReader(orcDataSource, dataSize, dataSize, dataSize);
+        OrcDataSource orcDataSource = new FileOrcDataSource(tempFile.getFile(), READER_OPTIONS);
+        OrcReader orcReader = new OrcReader(orcDataSource, READER_OPTIONS);
 
         Map<Integer, Type> includedColumns = new HashMap<>();
         includedColumns.put(0, readerType);
@@ -279,9 +279,9 @@ public class TestStructStreamReader
     {
         ImmutableList.Builder<TypeSignatureParameter> typeSignatureParameters = ImmutableList.builder();
         for (String fieldName : fieldNames) {
-            typeSignatureParameters.add(TypeSignatureParameter.of(new NamedTypeSignature(Optional.of(new RowFieldName(fieldName, false)), TEST_DATA_TYPE.getTypeSignature())));
+            typeSignatureParameters.add(TypeSignatureParameter.namedTypeParameter(new NamedTypeSignature(Optional.of(new RowFieldName(fieldName, false)), TEST_DATA_TYPE.getTypeSignature())));
         }
-        return TYPE_MANAGER.getParameterizedType(StandardTypes.ROW, typeSignatureParameters.build());
+        return METADATA.getParameterizedType(StandardTypes.ROW, typeSignatureParameters.build());
     }
 
     private Type getTypeNullName(int numFields)
@@ -289,8 +289,8 @@ public class TestStructStreamReader
         ImmutableList.Builder<TypeSignatureParameter> typeSignatureParameters = ImmutableList.builder();
 
         for (int i = 0; i < numFields; i++) {
-            typeSignatureParameters.add(TypeSignatureParameter.of(new NamedTypeSignature(Optional.empty(), TEST_DATA_TYPE.getTypeSignature())));
+            typeSignatureParameters.add(TypeSignatureParameter.namedTypeParameter(new NamedTypeSignature(Optional.empty(), TEST_DATA_TYPE.getTypeSignature())));
         }
-        return TYPE_MANAGER.getParameterizedType(StandardTypes.ROW, typeSignatureParameters.build());
+        return METADATA.getParameterizedType(StandardTypes.ROW, typeSignatureParameters.build());
     }
 }

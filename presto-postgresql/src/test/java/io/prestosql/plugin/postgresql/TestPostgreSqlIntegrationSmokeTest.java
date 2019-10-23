@@ -13,13 +13,11 @@
  */
 package io.prestosql.plugin.postgresql;
 
-import io.airlift.testing.postgresql.TestingPostgreSqlServer;
 import io.prestosql.tests.AbstractTestIntegrationSmokeTest;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
-import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -42,7 +40,7 @@ public class TestPostgreSqlIntegrationSmokeTest
     public TestPostgreSqlIntegrationSmokeTest()
             throws Exception
     {
-        this(new TestingPostgreSqlServer("testuser", "tpch"));
+        this(new TestingPostgreSqlServer());
     }
 
     public TestPostgreSqlIntegrationSmokeTest(TestingPostgreSqlServer postgreSqlServer)
@@ -55,7 +53,6 @@ public class TestPostgreSqlIntegrationSmokeTest
 
     @AfterClass(alwaysRun = true)
     public final void destroy()
-            throws IOException
     {
         postgreSqlServer.close();
     }
@@ -110,6 +107,20 @@ public class TestPostgreSqlIntegrationSmokeTest
         computeActual("SELECT * FROM test_ft");
         execute("DROP FOREIGN TABLE tpch.test_ft");
         execute("DROP SERVER devnull");
+    }
+
+    @Test
+    public void testSystemTable()
+            throws Exception
+    {
+        assertThat(computeActual("SHOW TABLES FROM pg_catalog").getOnlyColumnAsSet())
+                .contains("pg_tables", "pg_views", "pg_type", "pg_index");
+        // SYSTEM TABLE
+        assertThat(computeActual("SELECT typname FROM pg_catalog.pg_type").getOnlyColumnAsSet())
+                .contains("char", "text");
+        // SYSTEM VIEW
+        assertThat(computeActual("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'tpch'").getOnlyColumn())
+                .contains("orders");
     }
 
     @Test

@@ -14,12 +14,9 @@
 package io.prestosql.sql.planner.planprinter;
 
 import com.google.common.base.CaseFormat;
-import com.google.common.base.Functions;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Streams;
 import io.airlift.units.Duration;
 import io.prestosql.Session;
@@ -30,6 +27,7 @@ import io.prestosql.execution.StageInfo;
 import io.prestosql.execution.StageStats;
 import io.prestosql.execution.TableInfo;
 import io.prestosql.metadata.Metadata;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.metadata.TableHandle;
 import io.prestosql.operator.StageExecutionDescriptor;
 import io.prestosql.spi.connector.ColumnHandle;
@@ -51,9 +49,11 @@ import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeProvider;
 import io.prestosql.sql.planner.iterative.GroupReference;
 import io.prestosql.sql.planner.plan.AggregationNode;
+import io.prestosql.sql.planner.plan.AggregationNode.Aggregation;
 import io.prestosql.sql.planner.plan.ApplyNode;
 import io.prestosql.sql.planner.plan.AssignUniqueId;
 import io.prestosql.sql.planner.plan.Assignments;
+import io.prestosql.sql.planner.plan.CorrelatedJoinNode;
 import io.prestosql.sql.planner.plan.DeleteNode;
 import io.prestosql.sql.planner.plan.DistinctLimitNode;
 import io.prestosql.sql.planner.plan.EnforceSingleRowNode;
@@ -67,7 +67,6 @@ import io.prestosql.sql.planner.plan.IndexJoinNode;
 import io.prestosql.sql.planner.plan.IndexSourceNode;
 import io.prestosql.sql.planner.plan.IntersectNode;
 import io.prestosql.sql.planner.plan.JoinNode;
-import io.prestosql.sql.planner.plan.LateralJoinNode;
 import io.prestosql.sql.planner.plan.LimitNode;
 import io.prestosql.sql.planner.plan.MarkDistinctNode;
 import io.prestosql.sql.planner.plan.OffsetNode;
@@ -99,7 +98,10 @@ import io.prestosql.sql.planner.plan.WindowNode;
 import io.prestosql.sql.planner.planprinter.NodeRepresentation.TypedSymbol;
 import io.prestosql.sql.tree.ComparisonExpression;
 import io.prestosql.sql.tree.Expression;
+import io.prestosql.sql.tree.ExpressionRewriter;
+import io.prestosql.sql.tree.ExpressionTreeRewriter;
 import io.prestosql.sql.tree.FunctionCall;
+import io.prestosql.sql.tree.QualifiedName;
 import io.prestosql.sql.tree.SymbolReference;
 import io.prestosql.util.GraphvizPrinter;
 
@@ -109,6 +111,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
@@ -123,8 +126,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.prestosql.execution.StageInfo.getAllStages;
 import static io.prestosql.operator.StageExecutionDescriptor.ungroupedExecution;
-import static io.prestosql.sql.DynamicFilters.extractDynamicFilters;
-import static io.prestosql.sql.ExpressionUtils.combineConjuncts;
 import static io.prestosql.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static io.prestosql.sql.planner.planprinter.PlanNodeStatsSummarizer.aggregateStageStats;
 import static io.prestosql.sql.planner.planprinter.TextRenderer.formatDouble;
@@ -164,11 +165,11 @@ public class PlanPrinter
         this.tableInfoSupplier = tableInfoSupplier;
         this.valuePrinter = valuePrinter;
 
-        Optional<Duration> totalCpuTime = stats.map(s -> new Duration(s.values().stream()
+        Optional<Duration> totalScheduledTime = stats.map(s -> new Duration(s.values().stream()
                 .mapToLong(planNode -> planNode.getPlanNodeScheduledTime().toMillis())
                 .sum(), MILLISECONDS));
 
-        Optional<Duration> totalScheduledTime = stats.map(s -> new Duration(s.values().stream()
+        Optional<Duration> totalCpuTime = stats.map(s -> new Duration(s.values().stream()
                 .mapToLong(planNode -> planNode.getPlanNodeCpuTime().toMillis())
                 .sum(), MILLISECONDS));
 
@@ -392,9 +393,11 @@ public class PlanPrinter
         {
             List<Expression> joinExpressions = new ArrayList<>();
             for (JoinNode.EquiJoinClause clause : node.getCriteria()) {
-                joinExpressions.add(clause.toExpression());
+                joinExpressions.add(unresolveFunctions(clause.toExpression()));
             }
-            node.getFilter().ifPresent(joinExpressions::add);
+            node.getFilter()
+                    .map(PlanPrinter::unresolveFunctions)
+                    .ifPresent(joinExpressions::add);
 
             NodeRepresentation nodeOutput;
             if (node.isCrossJoin()) {
@@ -527,14 +530,7 @@ public class PlanPrinter
             NodeRepresentation nodeOutput = addNode(node,
                     format("Aggregate%s%s%s", type, key, formatHash(node.getHashSymbol())));
 
-            for (Map.Entry<Symbol, AggregationNode.Aggregation> entry : node.getAggregations().entrySet()) {
-                if (entry.getValue().getMask().isPresent()) {
-                    nodeOutput.appendDetailsLine("%s := %s (mask = %s)", entry.getKey(), entry.getValue().getCall(), entry.getValue().getMask().get());
-                }
-                else {
-                    nodeOutput.appendDetailsLine("%s := %s", entry.getKey(), entry.getValue().getCall());
-                }
-            }
+            node.getAggregations().forEach((symbol, aggregation) -> nodeOutput.appendDetailsLine("%s := %s", symbol, formatAggregation(aggregation)));
 
             return processChildren(node, context);
         }
@@ -571,7 +567,9 @@ public class PlanPrinter
         @Override
         public Void visitWindow(WindowNode node, Void context)
         {
-            List<String> partitionBy = Lists.transform(node.getPartitionBy(), Functions.toStringFunction());
+            List<String> partitionBy = node.getPartitionBy().stream()
+                    .map(Objects::toString)
+                    .collect(toImmutableList());
 
             List<String> args = new ArrayList<>();
             if (!partitionBy.isEmpty()) {
@@ -612,10 +610,15 @@ public class PlanPrinter
             NodeRepresentation nodeOutput = addNode(node, "Window", format("[%s]%s", Joiner.on(", ").join(args), formatHash(node.getHashSymbol())));
 
             for (Map.Entry<Symbol, WindowNode.Function> entry : node.getWindowFunctions().entrySet()) {
-                FunctionCall call = entry.getValue().getFunctionCall();
-                String frameInfo = formatFrame(entry.getValue().getFrame());
+                WindowNode.Function function = entry.getValue();
+                String frameInfo = formatFrame(function.getFrame());
 
-                nodeOutput.appendDetailsLine("%s := %s(%s) %s", entry.getKey(), call.getName(), Joiner.on(", ").join(call.getArguments()), frameInfo);
+                nodeOutput.appendDetailsLine(
+                        "%s := %s(%s) %s",
+                        entry.getKey(),
+                        function.getResolvedFunction().getSignature().getName(),
+                        Joiner.on(", ").join(function.getArguments()),
+                        frameInfo);
             }
             return processChildren(node, context);
         }
@@ -624,7 +627,7 @@ public class PlanPrinter
         public Void visitTopNRowNumber(TopNRowNumberNode node, Void context)
         {
             List<String> partitionBy = node.getPartitionBy().stream()
-                    .map(Functions.toStringFunction())
+                    .map(Object::toString)
                     .collect(toImmutableList());
 
             List<String> orderBy = node.getOrderingScheme().getOrderBy().stream()
@@ -647,7 +650,10 @@ public class PlanPrinter
         @Override
         public Void visitRowNumber(RowNumberNode node, Void context)
         {
-            List<String> partitionBy = Lists.transform(node.getPartitionBy(), Functions.toStringFunction());
+            List<String> partitionBy = node.getPartitionBy().stream()
+                    .map(Objects::toString)
+                    .collect(toImmutableList());
+
             List<String> args = new ArrayList<>();
             if (!partitionBy.isEmpty()) {
                 args.add(format("partition by (%s)", Joiner.on(", ").join(partitionBy)));
@@ -687,7 +693,10 @@ public class PlanPrinter
         {
             NodeRepresentation nodeOutput = addNode(node, "Values");
             for (List<Expression> row : node.getRows()) {
-                nodeOutput.appendDetailsLine("(" + Joiner.on(", ").join(row) + ")");
+                nodeOutput.appendDetailsLine(row.stream()
+                        .map(PlanPrinter::unresolveFunctions)
+                        .map(Expression::toString)
+                        .collect(joining(", ", "(", ")")));
             }
             return null;
         }
@@ -750,13 +759,7 @@ public class PlanPrinter
             if (filterNode.isPresent()) {
                 operatorName += "Filter";
                 formatString += "filterPredicate = %s, ";
-                Expression predicate = filterNode.get().getPredicate();
-                DynamicFilters.ExtractResult extractResult = extractDynamicFilters(predicate);
-                arguments.add(combineConjuncts(extractResult.getStaticConjuncts()));
-                if (!extractResult.getDynamicConjuncts().isEmpty()) {
-                    formatString += "dynamicFilter = %s, ";
-                    arguments.add(printDynamicFilters(extractResult.getDynamicConjuncts()));
-                }
+                arguments.add(filterNode.get().getPredicate());
             }
 
             if (formatString.length() > 1) {
@@ -850,9 +853,21 @@ public class PlanPrinter
         @Override
         public Void visitUnnest(UnnestNode node, Void context)
         {
-            addNode(node,
-                    "Unnest",
-                    format("[replicate=%s, unnest=%s]", formatOutputs(types, node.getReplicateSymbols()), formatOutputs(types, node.getUnnestSymbols().keySet())));
+            String name;
+            if (node.getFilter().isPresent()) {
+                name = node.getJoinType().getJoinLabel() + " Unnest";
+            }
+            else if (!node.getReplicateSymbols().isEmpty()) {
+                name = "CrossJoin Unnest";
+            }
+            else {
+                name = "Unnest";
+            }
+            addNode(
+                    node,
+                    name,
+                    format("[replicate=%s, unnest=%s", formatOutputs(types, node.getReplicateSymbols()), formatOutputs(types, node.getUnnestSymbols().keySet()))
+                            + (node.getFilter().isPresent() ? format(", filter=%s]", node.getFilter().get().toString()) : "]"));
             return processChildren(node, context);
         }
 
@@ -873,22 +888,28 @@ public class PlanPrinter
         @Override
         public Void visitTopN(TopNNode node, Void context)
         {
-            Iterable<String> keys = Iterables.transform(node.getOrderingScheme().getOrderBy(), input -> input + " " + node.getOrderingScheme().getOrdering(input));
+            String keys = node.getOrderingScheme()
+                    .getOrderBy().stream()
+                    .map(input -> input + " " + node.getOrderingScheme().getOrdering(input))
+                    .collect(joining(", "));
 
             addNode(node,
                     format("TopN%s", node.getStep() == TopNNode.Step.PARTIAL ? "Partial" : ""),
-                    format("[%s by (%s)]", node.getCount(), Joiner.on(", ").join(keys)));
+                    format("[%s by (%s)]", node.getCount(), keys));
             return processChildren(node, context);
         }
 
         @Override
         public Void visitSort(SortNode node, Void context)
         {
-            Iterable<String> keys = Iterables.transform(node.getOrderingScheme().getOrderBy(), input -> input + " " + node.getOrderingScheme().getOrdering(input));
+            String keys = node.getOrderingScheme()
+                    .getOrderBy().stream()
+                    .map(input -> input + " " + node.getOrderingScheme().getOrdering(input))
+                    .collect(joining(", "));
 
             addNode(node,
                     format("%sSort", node.isPartial() ? "Partial" : ""),
-                    format("[%s]", Joiner.on(", ").join(keys)));
+                    format("[%s]", keys));
 
             return processChildren(node, context);
         }
@@ -993,7 +1014,7 @@ public class PlanPrinter
                 nodeOutput.appendDetailsLine(indentString(1) + "%s => [%s := %s]",
                         tableStatistic.getValue(),
                         tableStatistic.getKey(),
-                        aggregations.get(tableStatistic.getValue()).getCall());
+                        formatAggregation(aggregations.get(tableStatistic.getValue())));
             }
 
             for (Map.Entry<ColumnStatisticMetadata, Symbol> columnStatistic : columnStatistics.entrySet()) {
@@ -1002,7 +1023,7 @@ public class PlanPrinter
                         columnStatistic.getKey().getStatisticType(),
                         columnStatistic.getKey().getColumnName(),
                         columnStatistic.getValue(),
-                        aggregations.get(columnStatistic.getValue()).getCall());
+                        formatAggregation(aggregations.get(columnStatistic.getValue())));
             }
         }
 
@@ -1098,7 +1119,7 @@ public class PlanPrinter
         }
 
         @Override
-        public Void visitLateralJoin(LateralJoinNode node, Void context)
+        public Void visitCorrelatedJoin(CorrelatedJoinNode node, Void context)
         {
             addNode(node,
                     "Lateral",
@@ -1131,7 +1152,7 @@ public class PlanPrinter
                     // skip identity assignments
                     continue;
                 }
-                nodeOutput.appendDetailsLine("%s := %s", entry.getKey(), entry.getValue());
+                nodeOutput.appendDetailsLine("%s := %s", entry.getKey(), unresolveFunctions(entry.getValue()));
             }
         }
 
@@ -1275,5 +1296,56 @@ public class PlanPrinter
         return Streams.stream(outputs)
                 .map(input -> input + ":" + types.get(input).getDisplayName())
                 .collect(Collectors.joining(", "));
+    }
+
+    public static String formatAggregation(Aggregation aggregation)
+    {
+        StringBuilder builder = new StringBuilder();
+
+        String arguments = Joiner.on(", ").join(aggregation.getArguments());
+        if (aggregation.getArguments().isEmpty() && "count".equalsIgnoreCase(aggregation.getResolvedFunction().getSignature().getName())) {
+            arguments = "*";
+        }
+        if (aggregation.isDistinct()) {
+            arguments = "DISTINCT " + arguments;
+        }
+
+        builder.append(aggregation.getResolvedFunction().getSignature().getName())
+                .append('(').append(arguments);
+
+        aggregation.getOrderingScheme().ifPresent(orderingScheme -> builder.append(' ').append(orderingScheme.getOrderBy().stream()
+                .map(input -> input + " " + orderingScheme.getOrdering(input))
+                .collect(joining(", "))));
+
+        builder.append(')');
+
+        aggregation.getFilter().ifPresent(expression -> builder.append(" FILTER (WHERE ").append(expression).append(")"));
+
+        aggregation.getMask().ifPresent(symbol -> builder.append(" (mask = ").append(symbol).append(")"));
+        return builder.toString();
+    }
+
+    private static Expression unresolveFunctions(Expression expression)
+    {
+        return ExpressionTreeRewriter.rewriteWith(new ExpressionRewriter<Void>()
+        {
+            @Override
+            public Expression rewriteFunctionCall(FunctionCall node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
+            {
+                FunctionCall rewritten = treeRewriter.defaultRewrite(node, context);
+
+                return ResolvedFunction.fromQualifiedName(node.getName())
+                        .map(function -> new FunctionCall(
+                                rewritten.getLocation(),
+                                QualifiedName.of(function.getSignature().getName()),
+                                rewritten.getWindow(),
+                                rewritten.getFilter(),
+                                rewritten.getOrderBy(),
+                                rewritten.isDistinct(),
+                                rewritten.getNullTreatment(),
+                                rewritten.getArguments()))
+                        .orElse(rewritten);
+            }
+        }, expression);
     }
 }

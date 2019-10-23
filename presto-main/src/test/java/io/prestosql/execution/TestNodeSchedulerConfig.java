@@ -14,21 +14,23 @@
 package io.prestosql.execution;
 
 import com.google.common.collect.ImmutableMap;
-import io.airlift.configuration.testing.ConfigAssertions;
 import io.prestosql.execution.scheduler.NodeSchedulerConfig;
 import org.testng.annotations.Test;
 
 import java.util.Map;
 
-import static io.prestosql.execution.scheduler.NodeSchedulerConfig.NetworkTopologyType.LEGACY;
+import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
+import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
+import static io.prestosql.execution.scheduler.NodeSchedulerConfig.NodeSchedulerPolicy.UNIFORM;
 
 public class TestNodeSchedulerConfig
 {
     @Test
     public void testDefaults()
     {
-        ConfigAssertions.assertRecordedDefaults(ConfigAssertions.recordDefaults(NodeSchedulerConfig.class)
-                .setNetworkTopology(LEGACY)
+        assertRecordedDefaults(recordDefaults(NodeSchedulerConfig.class)
+                .setNodeSchedulerPolicy(UNIFORM.name())
                 .setMinCandidates(10)
                 .setMaxSplitsPerNode(100)
                 .setMaxPendingSplitsPerTask(10)
@@ -40,7 +42,7 @@ public class TestNodeSchedulerConfig
     public void testExplicitPropertyMappings()
     {
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
-                .put("node-scheduler.network-topology", "flat")
+                .put("node-scheduler.policy", "topology")
                 .put("node-scheduler.min-candidates", "11")
                 .put("node-scheduler.include-coordinator", "false")
                 .put("node-scheduler.max-pending-splits-per-task", "11")
@@ -49,13 +51,13 @@ public class TestNodeSchedulerConfig
                 .build();
 
         NodeSchedulerConfig expected = new NodeSchedulerConfig()
-                .setNetworkTopology("flat")
+                .setNodeSchedulerPolicy("topology")
                 .setIncludeCoordinator(false)
                 .setMaxSplitsPerNode(101)
                 .setMaxPendingSplitsPerTask(11)
                 .setMinCandidates(11)
                 .setOptimizedLocalScheduling(false);
 
-        ConfigAssertions.assertFullMapping(properties, expected);
+        assertFullMapping(properties, expected);
     }
 }

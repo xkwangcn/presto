@@ -14,14 +14,17 @@
 package io.prestosql.plugin.hive;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import io.airlift.event.client.EventClient;
 import io.airlift.json.JsonCodec;
 import io.airlift.units.DataSize;
+import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.plugin.hive.metastore.HiveMetastore;
 import io.prestosql.plugin.hive.metastore.HivePageSinkMetadataProvider;
 import io.prestosql.plugin.hive.metastore.SortingColumn;
+import io.prestosql.plugin.hive.orc.OrcFileWriterFactory;
 import io.prestosql.spi.NodeManager;
 import io.prestosql.spi.PageIndexerFactory;
 import io.prestosql.spi.PageSorter;
@@ -36,12 +39,13 @@ import io.prestosql.spi.type.TypeManager;
 import javax.inject.Inject;
 
 import java.util.List;
+import java.util.Map;
 import java.util.OptionalInt;
 import java.util.Set;
 
 import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static io.prestosql.plugin.hive.metastore.CachingHiveMetastore.memoizeMetastore;
+import static io.prestosql.plugin.hive.metastore.cache.CachingHiveMetastore.memoizeMetastore;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newFixedThreadPool;
 
@@ -109,18 +113,18 @@ public class HivePageSinkProvider
     @Override
     public ConnectorPageSink createPageSink(ConnectorTransactionHandle transaction, ConnectorSession session, ConnectorOutputTableHandle tableHandle)
     {
-        HiveWritableTableHandle handle = (HiveOutputTableHandle) tableHandle;
-        return createPageSink(handle, true, session);
+        HiveOutputTableHandle handle = (HiveOutputTableHandle) tableHandle;
+        return createPageSink(handle, true, session, handle.getAdditionalTableParameters());
     }
 
     @Override
     public ConnectorPageSink createPageSink(ConnectorTransactionHandle transaction, ConnectorSession session, ConnectorInsertTableHandle tableHandle)
     {
-        HiveInsertTableHandle handle = (HiveInsertTableHandle) tableHandle;
-        return createPageSink(handle, false, session);
+        HiveWritableTableHandle handle = (HiveInsertTableHandle) tableHandle;
+        return createPageSink(handle, false, session, ImmutableMap.of() /* for insert properties are taken from metastore */);
     }
 
-    private ConnectorPageSink createPageSink(HiveWritableTableHandle handle, boolean isCreateTable, ConnectorSession session)
+    private ConnectorPageSink createPageSink(HiveWritableTableHandle handle, boolean isCreateTable, ConnectorSession session, Map<String, String> additionalTableParameters)
     {
         OptionalInt bucketCount = OptionalInt.empty();
         List<SortingColumn> sortedBy = ImmutableList.of();
@@ -138,12 +142,13 @@ public class HivePageSinkProvider
                 handle.getInputColumns(),
                 handle.getTableStorageFormat(),
                 handle.getPartitionStorageFormat(),
+                additionalTableParameters,
                 bucketCount,
                 sortedBy,
                 handle.getLocationHandle(),
                 locationService,
                 session.getQueryId(),
-                new HivePageSinkMetadataProvider(handle.getPageSinkMetadata(), memoizeMetastore(metastore, perTransactionMetastoreCacheMaximumSize)),
+                new HivePageSinkMetadataProvider(handle.getPageSinkMetadata(), memoizeMetastore(metastore, perTransactionMetastoreCacheMaximumSize), new HiveIdentity(session)),
                 typeManager,
                 hdfsEnvironment,
                 pageSorter,
@@ -162,7 +167,6 @@ public class HivePageSinkProvider
                 handle.getInputColumns(),
                 handle.getBucketProperty(),
                 pageIndexerFactory,
-                typeManager,
                 hdfsEnvironment,
                 maxOpenPartitions,
                 writeVerificationExecutor,

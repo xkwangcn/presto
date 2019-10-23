@@ -13,6 +13,8 @@
  */
 package io.prestosql.spi.connector;
 
+import io.prestosql.spi.predicate.TupleDomain;
+
 import java.util.List;
 
 public interface ConnectorPageSourceProvider
@@ -27,19 +29,22 @@ public interface ConnectorPageSourceProvider
             ConnectorTableHandle table,
             List<ColumnHandle> columns)
     {
-        return createPageSource(transaction, session, split, columns);
+        throw new UnsupportedOperationException("createPageSource() must be implemented");
     }
 
     /**
      * @param columns columns that should show up in the output page, in this order
+     * @param dynamicFilter optionally remove rows that don't satisfy this predicate
      */
-    @Deprecated
     default ConnectorPageSource createPageSource(
-            ConnectorTransactionHandle transactionHandle,
+            ConnectorTransactionHandle transaction,
             ConnectorSession session,
             ConnectorSplit split,
-            List<ColumnHandle> columns)
+            ConnectorTableHandle table,
+            List<ColumnHandle> columns,
+            TupleDomain<ColumnHandle> dynamicFilter)
     {
-        throw new UnsupportedOperationException("createPageSource() must be implemented");
+        // By default, ignore dynamic filter (as it is an optimization and doesn't affect correctness).
+        return createPageSource(transaction, session, split, table, columns);
     }
 }

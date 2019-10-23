@@ -8,7 +8,7 @@ Synopsis
 .. code-block:: none
 
     [ WITH with_query [, ...] ]
-    SELECT [ ALL | DISTINCT ] select_expr [, ...]
+    SELECT [ ALL | DISTINCT ] select_expression [, ...]
     [ FROM from_item [, ...] ]
     [ WHERE condition ]
     [ GROUP BY [ ALL | DISTINCT ] grouping_element [, ...] ]
@@ -89,6 +89,53 @@ Additionally, the relations within a ``WITH`` clause can chain::
     Currently, the SQL for the ``WITH`` clause will be inlined anywhere the named
     relation is used. This means that if the relation is used more than once and the query
     is non-deterministic, the results may be different each time.
+
+SELECT Clause
+-------------
+
+The ``SELECT`` clause specifies the output of the query. Each ``select_expression``
+defines a column or columns to be included in the result.
+
+.. code-block:: none
+
+    SELECT [ ALL | DISTINCT ] select_expression [, ...]
+
+The ``ALL`` and ``DISTINCT`` quantifiers determine whether duplicate rows
+are included in the result set. If the argument ``ALL`` is specified,
+all rows are included. If the argument ``DISTINCT`` is specified, only unique
+rows are included in the result set. In this case, each output column must
+be of a type that allows comparison. If neither argument is specified,
+the behavior defaults to ``ALL``.
+
+**Select expressions**
+
+Each ``select_expression`` must be in one of the following forms:
+
+.. code-block:: none
+
+    expression [ [ AS ] column_alias ]
+
+.. code-block:: none
+
+    relation.*
+
+.. code-block:: none
+
+    *
+
+In the case of ``expression [ [ AS ] column_alias ]``, a single output column
+is defined.
+
+In the case of ``relation.*``, all columns of ``relation`` are included
+in the result set.
+
+In the case of ``*``, all columns of the relation defined by the query
+are included in the result set.
+
+In the result set, the order of columns is the same as the order of their
+specification by the select expressions. If a select expression returns multiple
+columns, they are ordered the same way they were ordered in the source
+relation.
 
 GROUP BY Clause
 ---------------
@@ -871,8 +918,8 @@ This is repeated for set of rows from the column source tables.
 computing the rows to be joined::
 
     SELECT name, x, y
-    FROM nation,
-    CROSS JOIN LATERAL (SELECT name || ' :-' AS x),
+    FROM nation
+    CROSS JOIN LATERAL (SELECT name || ' :-' AS x)
     CROSS JOIN LATERAL (SELECT x || ')' AS y)
 
 Qualifying Column Names

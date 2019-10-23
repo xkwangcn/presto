@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.prestosql</groupId>
         <artifactId>presto-root</artifactId>
-        <version>315</version>
+        <version>322</version>
     </parent>
 
     <artifactId>presto-hive</artifactId>
@@ -99,12 +99,6 @@
         </dependency>
 
         <dependency>
-            <groupId>io.airlift</groupId>
-            <artifactId>parameternames</artifactId>
-            <version>1.4</version>
-        </dependency>
-
-        <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
         </dependency>
@@ -126,11 +120,6 @@
         </dependency>
 
         <dependency>
-            <groupId>org.openjdk.jol</groupId>
-            <artifactId>jol-core</artifactId>
-        </dependency>
-
-        <dependency>
             <groupId>javax.validation</groupId>
             <artifactId>validation-api</artifactId>
         </dependency>
@@ -143,12 +132,6 @@
         <dependency>
             <groupId>joda-time</groupId>
             <artifactId>joda-time</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>io.airlift</groupId>
-            <artifactId>joda-to-java-time-bridge</artifactId>
-            <scope>runtime</scope>
         </dependency>
 
         <dependency>
@@ -202,6 +185,11 @@
             <artifactId>javax.inject</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
         <!-- used by tests but also needed transitively -->
         <dependency>
             <groupId>io.airlift</groupId>
@@ -213,21 +201,31 @@
         <dependency>
             <groupId>io.prestosql</groupId>
             <artifactId>presto-spi</artifactId>
+            <scope>provided</scope>
         </dependency>
 
         <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>slice</artifactId>
+            <scope>provided</scope>
         </dependency>
 
         <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>units</artifactId>
+            <scope>provided</scope>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-annotations</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.openjdk.jol</groupId>
+            <artifactId>jol-core</artifactId>
+            <scope>provided</scope>
         </dependency>
 
         <!-- for testing -->

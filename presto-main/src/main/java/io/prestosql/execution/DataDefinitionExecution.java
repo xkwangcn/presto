@@ -24,9 +24,9 @@ import io.prestosql.execution.StateMachine.StateChangeListener;
 import io.prestosql.execution.warnings.WarningCollector;
 import io.prestosql.memory.VersionedMemoryPoolId;
 import io.prestosql.metadata.Metadata;
-import io.prestosql.metadata.MetadataManager;
 import io.prestosql.security.AccessControl;
 import io.prestosql.server.BasicQueryInfo;
+import io.prestosql.server.protocol.Slug;
 import io.prestosql.spi.QueryId;
 import io.prestosql.sql.planner.Plan;
 import io.prestosql.sql.tree.Expression;
@@ -54,7 +54,7 @@ public class DataDefinitionExecution<T extends Statement>
 {
     private final DataDefinitionTask<T> task;
     private final T statement;
-    private final String slug;
+    private final Slug slug;
     private final TransactionManager transactionManager;
     private final Metadata metadata;
     private final AccessControl accessControl;
@@ -64,7 +64,7 @@ public class DataDefinitionExecution<T extends Statement>
     private DataDefinitionExecution(
             DataDefinitionTask<T> task,
             T statement,
-            String slug,
+            Slug slug,
             TransactionManager transactionManager,
             Metadata metadata,
             AccessControl accessControl,
@@ -82,7 +82,7 @@ public class DataDefinitionExecution<T extends Statement>
     }
 
     @Override
-    public String getSlug()
+    public Slug getSlug()
     {
         return slug;
     }
@@ -287,7 +287,7 @@ public class DataDefinitionExecution<T extends Statement>
         @Inject
         public DataDefinitionExecutionFactory(
                 TransactionManager transactionManager,
-                MetadataManager metadata,
+                Metadata metadata,
                 AccessControl accessControl,
                 Map<Class<? extends Statement>, DataDefinitionTask<?>> tasks)
         {
@@ -301,7 +301,7 @@ public class DataDefinitionExecution<T extends Statement>
         public DataDefinitionExecution<?> createQueryExecution(
                 PreparedQuery preparedQuery,
                 QueryStateMachine stateMachine,
-                String slug,
+                Slug slug,
                 WarningCollector warningCollector)
         {
             return createDataDefinitionExecution(preparedQuery.getStatement(), preparedQuery.getParameters(), stateMachine, slug);
@@ -311,7 +311,7 @@ public class DataDefinitionExecution<T extends Statement>
                 T statement,
                 List<Expression> parameters,
                 QueryStateMachine stateMachine,
-                String slug)
+                Slug slug)
         {
             @SuppressWarnings("unchecked")
             DataDefinitionTask<T> task = (DataDefinitionTask<T>) tasks.get(statement.getClass());

@@ -16,7 +16,7 @@ package io.prestosql.operator.aggregation;
 import com.google.common.collect.ImmutableList;
 import io.airlift.bytecode.DynamicClassLoader;
 import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.SqlAggregationFunction;
 import io.prestosql.operator.aggregation.AggregationMetadata.AccumulatorStateDescriptor;
 import io.prestosql.operator.aggregation.state.KeyValuePairStateSerializer;
@@ -27,11 +27,12 @@ import io.prestosql.spi.block.BlockBuilder;
 import io.prestosql.spi.type.MapType;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.spi.type.TypeSignatureParameter;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
+import java.util.Optional;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.metadata.Signature.comparableTypeParameter;
@@ -42,7 +43,7 @@ import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMet
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.NULLABLE_BLOCK_INPUT_CHANNEL;
 import static io.prestosql.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.STATE;
 import static io.prestosql.operator.aggregation.AggregationUtils.generateAggregationName;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.TypeSignature.mapType;
 import static io.prestosql.util.Reflection.methodHandle;
 
 public class MapAggregationFunction
@@ -59,8 +60,8 @@ public class MapAggregationFunction
         super(NAME,
                 ImmutableList.of(comparableTypeParameter("K"), typeVariable("V")),
                 ImmutableList.of(),
-                parseTypeSignature("map(K,V)"),
-                ImmutableList.of(parseTypeSignature("K"), parseTypeSignature("V")));
+                mapType(new TypeSignature("K"), new TypeSignature("V")),
+                ImmutableList.of(new TypeSignature("K"), new TypeSignature("V")));
     }
 
     @Override
@@ -70,13 +71,13 @@ public class MapAggregationFunction
     }
 
     @Override
-    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type keyType = boundVariables.getTypeVariable("K");
         Type valueType = boundVariables.getTypeVariable("V");
-        MapType outputType = (MapType) typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
-                TypeSignatureParameter.of(keyType.getTypeSignature()),
-                TypeSignatureParameter.of(valueType.getTypeSignature())));
+        MapType outputType = (MapType) metadata.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                TypeSignatureParameter.typeParameter(keyType.getTypeSignature()),
+                TypeSignatureParameter.typeParameter(valueType.getTypeSignature())));
         return generateAggregation(keyType, valueType, outputType);
     }
 
@@ -91,6 +92,7 @@ public class MapAggregationFunction
                 generateAggregationName(NAME, outputType.getTypeSignature(), inputTypes.stream().map(Type::getTypeSignature).collect(toImmutableList())),
                 createInputParameterMetadata(keyType, valueType),
                 INPUT_FUNCTION.bindTo(keyType).bindTo(valueType),
+                Optional.empty(),
                 COMBINE_FUNCTION,
                 OUTPUT_FUNCTION,
                 ImmutableList.of(new AccumulatorStateDescriptor(

@@ -38,6 +38,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static io.prestosql.metadata.MetadataUtil.createQualifiedObjectName;
 import static io.prestosql.spi.connector.ConnectorViewDefinition.ViewColumn;
+import static io.prestosql.sql.ParameterUtils.parameterExtractor;
 import static io.prestosql.sql.SqlFormatterUtil.getFormattedSql;
 import static io.prestosql.sql.tree.CreateView.Security.INVOKER;
 import static java.util.Objects.requireNonNull;
@@ -72,15 +73,15 @@ public class CreateViewTask
         Session session = stateMachine.getSession();
         QualifiedObjectName name = createQualifiedObjectName(session, statement, statement.getName());
 
-        accessControl.checkCanCreateView(session.getRequiredTransactionId(), session.getIdentity(), name);
+        accessControl.checkCanCreateView(session.toSecurityContext(), name);
 
-        String sql = getFormattedSql(statement.getQuery(), sqlParser, Optional.of(parameters));
+        String sql = getFormattedSql(statement.getQuery(), sqlParser);
 
         Analysis analysis = analyzeStatement(statement, session, metadata, accessControl, parameters, stateMachine.getWarningCollector());
 
         List<ViewColumn> columns = analysis.getOutputDescriptor(statement.getQuery())
                 .getVisibleFields().stream()
-                .map(field -> new ViewColumn(field.getName().get(), field.getType().getTypeSignature()))
+                .map(field -> new ViewColumn(field.getName().get(), field.getType().getTypeId()))
                 .collect(toImmutableList());
 
         // use DEFINER security by default
@@ -104,7 +105,7 @@ public class CreateViewTask
 
     private Analysis analyzeStatement(Statement statement, Session session, Metadata metadata, AccessControl accessControl, List<Expression> parameters, WarningCollector warningCollector)
     {
-        Analyzer analyzer = new Analyzer(session, metadata, sqlParser, accessControl, Optional.empty(), parameters, warningCollector);
+        Analyzer analyzer = new Analyzer(session, metadata, sqlParser, accessControl, Optional.empty(), parameters, parameterExtractor(statement, parameters), warningCollector);
         return analyzer.analyze(statement);
     }
 }

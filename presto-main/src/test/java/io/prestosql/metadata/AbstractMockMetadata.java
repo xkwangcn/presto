@@ -13,9 +13,16 @@
  */
 package io.prestosql.metadata;
 
+import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Multimap;
 import io.airlift.slice.Slice;
 import io.prestosql.Session;
 import io.prestosql.connector.CatalogName;
+import io.prestosql.operator.aggregation.InternalAggregationFunction;
+import io.prestosql.operator.scalar.ScalarFunctionImplementation;
+import io.prestosql.operator.window.WindowFunctionSupplier;
+import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.block.BlockEncoding;
 import io.prestosql.spi.block.BlockEncodingSerde;
 import io.prestosql.spi.connector.CatalogSchemaName;
@@ -23,13 +30,17 @@ import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ColumnMetadata;
 import io.prestosql.spi.connector.ConnectorCapabilities;
 import io.prestosql.spi.connector.ConnectorOutputMetadata;
+import io.prestosql.spi.connector.ConnectorTableHandle;
 import io.prestosql.spi.connector.ConnectorTableMetadata;
 import io.prestosql.spi.connector.ConnectorViewDefinition;
 import io.prestosql.spi.connector.Constraint;
 import io.prestosql.spi.connector.ConstraintApplicationResult;
 import io.prestosql.spi.connector.LimitApplicationResult;
+import io.prestosql.spi.connector.ProjectionApplicationResult;
 import io.prestosql.spi.connector.SampleType;
 import io.prestosql.spi.connector.SystemTable;
+import io.prestosql.spi.expression.ConnectorExpression;
+import io.prestosql.spi.function.OperatorType;
 import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.security.GrantInfo;
 import io.prestosql.spi.security.PrestoPrincipal;
@@ -38,9 +49,11 @@ import io.prestosql.spi.security.RoleGrant;
 import io.prestosql.spi.statistics.ComputedStatistics;
 import io.prestosql.spi.statistics.TableStatistics;
 import io.prestosql.spi.statistics.TableStatisticsMetadata;
+import io.prestosql.spi.type.ParametricType;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeId;
 import io.prestosql.spi.type.TypeSignature;
+import io.prestosql.sql.analyzer.TypeSignatureProvider;
 import io.prestosql.sql.planner.PartitioningHandle;
 import io.prestosql.sql.tree.QualifiedName;
 
@@ -50,6 +63,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+
+import static io.prestosql.metadata.FunctionId.toFunctionId;
+import static io.prestosql.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
+import static io.prestosql.spi.type.DoubleType.DOUBLE;
 
 public abstract class AbstractMockMetadata
         implements Metadata
@@ -276,7 +293,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void beginQuery(Session session, Set<CatalogName> connectors)
+    public void beginQuery(Session session, Multimap<CatalogName, ConnectorTableHandle> connectors)
     {
         throw new UnsupportedOperationException();
     }
@@ -488,13 +505,31 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public TypeManager getTypeManager()
+    public Type fromSqlType(String sqlType)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Type getType(TypeId id)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
     public void verifyComparableOrderableContract()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Collection<Type> getTypes()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Collection<ParametricType> getParametricTypes()
     {
         throw new UnsupportedOperationException();
     }
@@ -516,13 +551,61 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public FunctionInvokerProvider getFunctionInvokerProvider()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ResolvedFunction resolveFunction(QualifiedName name, List<TypeSignatureProvider> parameterTypes)
+    {
+        String nameSuffix = name.getSuffix();
+        if (nameSuffix.equals("rand") && parameterTypes.isEmpty()) {
+            Signature boundSignature = new Signature(nameSuffix, FunctionKind.SCALAR, DOUBLE.getTypeSignature(), ImmutableList.of());
+            return new ResolvedFunction(boundSignature, toFunctionId(boundSignature));
+        }
+        throw new PrestoException(FUNCTION_NOT_FOUND, name + "(" + Joiner.on(", ").join(parameterTypes) + ")");
+    }
+
+    @Override
+    public ResolvedFunction resolveOperator(OperatorType operatorType, List<? extends Type> argumentTypes)
+            throws OperatorNotFoundException
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ResolvedFunction getCoercion(OperatorType operatorType, Type fromType, Type toType)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ResolvedFunction getCoercion(QualifiedName name, Type fromType, Type toType)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public boolean isAggregationFunction(QualifiedName name)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public FunctionRegistry getFunctionRegistry()
+    public WindowFunctionSupplier getWindowFunctionImplementation(ResolvedFunction resolvedFunction)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public InternalAggregationFunction getAggregateFunctionImplementation(ResolvedFunction resolvedFunction)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ScalarFunctionImplementation getScalarFunctionImplementation(ResolvedFunction resolvedFunction)
     {
         throw new UnsupportedOperationException();
     }
@@ -581,5 +664,11 @@ public abstract class AbstractMockMetadata
     public AnalyzePropertyManager getAnalyzePropertyManager()
     {
         throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Optional<ProjectionApplicationResult<TableHandle>> applyProjection(Session session, TableHandle table, List<ConnectorExpression> projections, Map<String, ColumnHandle> assignments)
+    {
+        return Optional.empty();
     }
 }

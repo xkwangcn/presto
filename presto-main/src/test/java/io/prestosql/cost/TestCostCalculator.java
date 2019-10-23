@@ -21,7 +21,6 @@ import io.prestosql.Session;
 import io.prestosql.connector.CatalogName;
 import io.prestosql.execution.QueryManagerConfig;
 import io.prestosql.execution.warnings.WarningCollector;
-import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.TableHandle;
 import io.prestosql.plugin.tpch.TpchColumnHandle;
 import io.prestosql.plugin.tpch.TpchConnectorFactory;
@@ -30,7 +29,6 @@ import io.prestosql.plugin.tpch.TpchTableLayoutHandle;
 import io.prestosql.security.AllowAllAccessControl;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.predicate.TupleDomain;
-import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
 import io.prestosql.sql.planner.Plan;
 import io.prestosql.sql.planner.PlanFragmenter;
@@ -51,7 +49,6 @@ import io.prestosql.sql.planner.plan.TableScanNode;
 import io.prestosql.sql.planner.plan.UnionNode;
 import io.prestosql.sql.tree.Cast;
 import io.prestosql.sql.tree.Expression;
-import io.prestosql.sql.tree.FunctionCall;
 import io.prestosql.sql.tree.IsNullPredicate;
 import io.prestosql.sql.tree.QualifiedName;
 import io.prestosql.sql.tree.SymbolReference;
@@ -69,10 +66,8 @@ import java.util.function.Function;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.prestosql.metadata.FunctionKind.AGGREGATE;
 import static io.prestosql.plugin.tpch.TpchTransactionHandle.INSTANCE;
 import static io.prestosql.spi.type.BigintType.BIGINT;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
 import static io.prestosql.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static io.prestosql.sql.planner.plan.ExchangeNode.Scope.LOCAL;
@@ -813,8 +808,11 @@ public class TestCostCalculator
     private AggregationNode aggregation(String id, PlanNode source)
     {
         AggregationNode.Aggregation aggregation = new AggregationNode.Aggregation(
-                new FunctionCall(QualifiedName.of("count"), ImmutableList.of()),
-                new Signature("count", AGGREGATE, parseTypeSignature(StandardTypes.BIGINT)),
+                localQueryRunner.getMetadata().resolveFunction(QualifiedName.of("count"), ImmutableList.of()),
+                ImmutableList.of(),
+                false,
+                Optional.empty(),
+                Optional.empty(),
                 Optional.empty());
 
         return new AggregationNode(
@@ -823,7 +821,7 @@ public class TestCostCalculator
                 ImmutableMap.of(new Symbol("count"), aggregation),
                 singleGroupingSet(source.getOutputSymbols()),
                 ImmutableList.of(),
-                AggregationNode.Step.FINAL,
+                AggregationNode.Step.SINGLE,
                 Optional.empty(),
                 Optional.empty());
     }
