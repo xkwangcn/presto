@@ -248,6 +248,12 @@ public class LazyBlock
         return block.isNull(position);
     }
 
+    public Block getBlock()
+    {
+        assureLoaded();
+        return block;
+    }
+
     public void setBlock(Block block)
     {
         if (this.block != null) {
@@ -256,15 +262,17 @@ public class LazyBlock
         this.block = requireNonNull(block, "block is null");
     }
 
+    @Override
     public boolean isLoaded()
     {
-        return block != null;
+        return block != null && block.isLoaded();
     }
 
     @Override
     public Block getLoadedBlock()
     {
         assureLoaded();
+        block = block.getLoadedBlock();
         return block;
     }
 
@@ -274,6 +282,10 @@ public class LazyBlock
             return;
         }
         loader.load(this);
+
+        while (block instanceof LazyBlock) {
+            block = ((LazyBlock) block).getBlock();
+        }
 
         if (block == null) {
             throw new IllegalArgumentException("Lazy block loader did not load this block");

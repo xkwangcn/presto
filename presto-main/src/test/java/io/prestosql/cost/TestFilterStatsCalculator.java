@@ -16,16 +16,20 @@ package io.prestosql.cost;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.prestosql.Session;
-import io.prestosql.metadata.MetadataManager;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.spi.type.DoubleType;
 import io.prestosql.spi.type.Type;
 import io.prestosql.spi.type.VarcharType;
+import io.prestosql.sql.parser.SqlParser;
 import io.prestosql.sql.planner.Symbol;
+import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.TypeProvider;
 import io.prestosql.sql.tree.Expression;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
+import static io.prestosql.sql.ExpressionTestUtils.planExpression;
 import static io.prestosql.sql.planner.iterative.rule.test.PlanBuilder.expression;
 import static io.prestosql.testing.TestingSession.testSessionBuilder;
 import static java.lang.Double.NEGATIVE_INFINITY;
@@ -49,10 +53,10 @@ public class TestFilterStatsCalculator
     private PlanNodeStatsEstimate standardInputStatistics;
     private TypeProvider standardTypes;
     private Session session;
+    private Metadata metadata;
 
     @BeforeClass
     public void setUp()
-            throws Exception
     {
         xStats = SymbolStatsEstimate.builder()
                 .setAverageRowSize(4.0)
@@ -134,8 +138,8 @@ public class TestFilterStatsCalculator
                 .build());
 
         session = testSessionBuilder().build();
-        MetadataManager metadata = MetadataManager.createTestMetadataManager();
-        statsCalculator = new FilterStatsCalculator(metadata, new ScalarStatsCalculator(metadata), new StatsNormalizer());
+        metadata = createTestMetadataManager();
+        statsCalculator = new FilterStatsCalculator(metadata, new ScalarStatsCalculator(metadata, new TypeAnalyzer(new SqlParser(), metadata)), new StatsNormalizer());
     }
 
     @Test
@@ -562,7 +566,7 @@ public class TestFilterStatsCalculator
 
     private PlanNodeStatsAssertion assertExpression(String expression)
     {
-        return assertExpression(expression(expression));
+        return assertExpression(planExpression(metadata, session, standardTypes, expression(expression)));
     }
 
     private PlanNodeStatsAssertion assertExpression(Expression expression)

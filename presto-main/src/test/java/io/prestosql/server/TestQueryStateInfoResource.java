@@ -53,7 +53,6 @@ public class TestQueryStateInfoResource
     private QueryResults queryResults;
 
     TestQueryStateInfoResource()
-            throws Exception
     {
         server = new TestingPrestoServer();
         server.installPlugin(new TpchPlugin());
@@ -138,7 +137,7 @@ public class TestQueryStateInfoResource
         assertNotNull(info);
     }
 
-    @Test(expectedExceptions = {UnexpectedResponseException.class}, expectedExceptionsMessageRegExp = ".*404: Not Found")
+    @Test(expectedExceptions = UnexpectedResponseException.class, expectedExceptionsMessageRegExp = ".*404: Not Found")
     public void testGetQueryStateInfoNo()
     {
         client.execute(

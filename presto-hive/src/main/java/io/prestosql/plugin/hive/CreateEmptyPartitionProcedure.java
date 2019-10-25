@@ -19,6 +19,7 @@ import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.prestosql.plugin.hive.LocationService.WriteInfo;
 import io.prestosql.plugin.hive.PartitionUpdate.UpdateMode;
+import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.plugin.hive.metastore.HiveMetastore;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.classloader.ThreadContextClassLoader;
@@ -27,6 +28,7 @@ import io.prestosql.spi.connector.ConnectorTableHandle;
 import io.prestosql.spi.connector.SchemaTableName;
 import io.prestosql.spi.procedure.Procedure;
 import io.prestosql.spi.procedure.Procedure.Argument;
+import io.prestosql.spi.type.ArrayType;
 import org.apache.hadoop.hive.common.FileUtils;
 
 import javax.inject.Inject;
@@ -42,7 +44,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.spi.StandardErrorCode.ALREADY_EXISTS;
 import static io.prestosql.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT;
 import static io.prestosql.spi.block.MethodHandleUtil.methodHandle;
-import static io.prestosql.spi.type.StandardTypes.VARCHAR;
+import static io.prestosql.spi.type.VarcharType.VARCHAR;
 import static java.util.Objects.requireNonNull;
 
 public class CreateEmptyPartitionProcedure
@@ -80,8 +82,8 @@ public class CreateEmptyPartitionProcedure
                 ImmutableList.of(
                         new Argument("schema_name", VARCHAR),
                         new Argument("table_name", VARCHAR),
-                        new Argument("partition_columns", "array(varchar)"),
-                        new Argument("partition_values", "array(varchar)")),
+                        new Argument("partition_columns", new ArrayType(VARCHAR)),
+                        new Argument("partition_values", new ArrayType(VARCHAR))),
                 CREATE_EMPTY_PARTITION.bindTo(this));
     }
 
@@ -111,7 +113,7 @@ public class CreateEmptyPartitionProcedure
                 .map(String.class::cast)
                 .collect(toImmutableList());
 
-        if (metastore.getPartition(schema, table, partitionStringValues).isPresent()) {
+        if (metastore.getPartition(new HiveIdentity(session), schema, table, partitionStringValues).isPresent()) {
             throw new PrestoException(ALREADY_EXISTS, "Partition already exists");
         }
         String partitionName = FileUtils.makePartName(actualPartitionColumnNames, partitionStringValues);

@@ -3,7 +3,7 @@
     <parent>
         <artifactId>presto-root</artifactId>
         <groupId>io.prestosql</groupId>
-        <version>315</version>
+        <version>322</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -29,6 +29,16 @@
         <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>configuration</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
+            <artifactId>log</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
+            <artifactId>log-manager</artifactId>
         </dependency>
 
         <dependency>
@@ -67,6 +77,12 @@
         <dependency>
             <groupId>io.prestosql</groupId>
             <artifactId>presto-spi</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.openjdk.jol</groupId>
+            <artifactId>jol-core</artifactId>
             <scope>provided</scope>
         </dependency>
 
@@ -112,7 +128,6 @@
             <artifactId>testing</artifactId>
             <scope>test</scope>
         </dependency>
-
 
         <dependency>
             <groupId>net.jodah</groupId>

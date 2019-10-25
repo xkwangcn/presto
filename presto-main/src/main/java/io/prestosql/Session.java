@@ -22,6 +22,7 @@ import io.airlift.units.Duration;
 import io.prestosql.connector.CatalogName;
 import io.prestosql.metadata.SessionPropertyManager;
 import io.prestosql.security.AccessControl;
+import io.prestosql.security.SecurityContext;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.QueryId;
 import io.prestosql.spi.connector.ConnectorSession;
@@ -350,7 +351,9 @@ public final class Session
                 queryId,
                 Optional.of(transactionId),
                 clientTransactionSupport,
-                new Identity(identity.getUser(), identity.getPrincipal(), roles.build(), identity.getExtraCredentials()),
+                Identity.from(identity)
+                        .withRoles(roles.build())
+                        .build(),
                 source,
                 catalog,
                 schema,
@@ -426,6 +429,11 @@ public final class Session
     public ConnectorSession toConnectorSession()
     {
         return new FullConnectorSession(this, identity.toConnectorIdentity());
+    }
+
+    public ConnectorSession toConnectorSession(String catalogName)
+    {
+        return toConnectorSession(new CatalogName(catalogName));
     }
 
     public ConnectorSession toConnectorSession(CatalogName catalogName)
@@ -505,6 +513,11 @@ public final class Session
     public static SessionBuilder builder(Session session)
     {
         return new SessionBuilder(session);
+    }
+
+    public SecurityContext toSecurityContext()
+    {
+        return new SecurityContext(getRequiredTransactionId(), getIdentity());
     }
 
     public static class SessionBuilder

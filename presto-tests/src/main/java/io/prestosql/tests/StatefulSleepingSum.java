@@ -16,11 +16,10 @@ package io.prestosql.tests;
 import com.google.common.collect.ImmutableList;
 import io.prestosql.metadata.BoundVariables;
 import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.SqlScalarFunction;
 import io.prestosql.operator.scalar.ScalarFunctionImplementation;
-import io.prestosql.spi.type.TypeManager;
 
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
@@ -30,7 +29,8 @@ import static com.google.common.base.Preconditions.checkState;
 import static io.prestosql.metadata.Signature.typeVariable;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.BigintType.BIGINT;
+import static io.prestosql.spi.type.DoubleType.DOUBLE;
 import static io.prestosql.util.Reflection.constructorMethodHandle;
 import static io.prestosql.util.Reflection.methodHandle;
 import static java.util.Collections.nCopies;
@@ -47,8 +47,8 @@ public class StatefulSleepingSum
                 FunctionKind.SCALAR,
                 ImmutableList.of(typeVariable("bigint")),
                 ImmutableList.of(),
-                parseTypeSignature("bigint"),
-                ImmutableList.of(parseTypeSignature("double"), parseTypeSignature("bigint"), parseTypeSignature("bigint"), parseTypeSignature("bigint")),
+                BIGINT.getTypeSignature(),
+                ImmutableList.of(DOUBLE.getTypeSignature(), BIGINT.getTypeSignature(), BIGINT.getTypeSignature(), BIGINT.getTypeSignature()),
                 false));
     }
 
@@ -71,7 +71,7 @@ public class StatefulSleepingSum
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         int args = 4;
         return new ScalarFunctionImplementation(

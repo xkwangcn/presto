@@ -23,6 +23,7 @@ import io.prestosql.plugin.tpch.TpchConnectorFactory;
 import io.prestosql.sql.planner.LogicalPlanner;
 import io.prestosql.sql.planner.Plan;
 import io.prestosql.sql.planner.RuleStatsRecorder;
+import io.prestosql.sql.planner.SubPlan;
 import io.prestosql.sql.planner.iterative.IterativeOptimizer;
 import io.prestosql.sql.planner.iterative.rule.RemoveRedundantIdentityProjections;
 import io.prestosql.sql.planner.optimizations.PlanOptimizer;
@@ -82,7 +83,6 @@ public class BasePlanTest
 
     @BeforeClass
     public final void initPlanTest()
-            throws Exception
     {
         queryRunner = queryRunnerSupplier.get();
     }
@@ -107,6 +107,11 @@ public class BasePlanTest
     protected void assertPlan(String sql, PlanMatchPattern pattern)
     {
         assertPlan(sql, LogicalPlanner.Stage.OPTIMIZED_AND_VALIDATED, pattern);
+    }
+
+    protected void assertPlan(String sql, Session session, PlanMatchPattern pattern)
+    {
+        assertPlanWithSession(sql, session, true, pattern);
     }
 
     protected void assertPlan(String sql, LogicalPlanner.Stage stage, PlanMatchPattern pattern)
@@ -202,9 +207,26 @@ public class BasePlanTest
         }
     }
 
+    protected SubPlan subplan(String sql, LogicalPlanner.Stage stage, boolean forceSingleNode)
+    {
+        return subplan(sql, stage, forceSingleNode, getQueryRunner().getDefaultSession());
+    }
+
+    protected SubPlan subplan(String sql, LogicalPlanner.Stage stage, boolean forceSingleNode, Session session)
+    {
+        try {
+            return queryRunner.inTransaction(session, transactionSession -> {
+                Plan plan = queryRunner.createPlan(transactionSession, sql, stage, forceSingleNode, WarningCollector.NOOP);
+                return queryRunner.createSubPlans(transactionSession, plan, forceSingleNode);
+            });
+        }
+        catch (RuntimeException e) {
+            throw new AssertionError("Planning failed for SQL: " + sql, e);
+        }
+    }
+
     public interface LocalQueryRunnerSupplier
     {
-        LocalQueryRunner get()
-                throws Exception;
+        LocalQueryRunner get();
     }
 }

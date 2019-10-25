@@ -16,13 +16,13 @@ package io.prestosql.sql.planner.optimizations;
 
 import io.prestosql.Session;
 import io.prestosql.execution.warnings.WarningCollector;
-import io.prestosql.sql.analyzer.SemanticException;
+import io.prestosql.spi.PrestoException;
 import io.prestosql.sql.planner.PlanNodeIdAllocator;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.SymbolAllocator;
 import io.prestosql.sql.planner.TypeProvider;
 import io.prestosql.sql.planner.plan.ApplyNode;
-import io.prestosql.sql.planner.plan.LateralJoinNode;
+import io.prestosql.sql.planner.plan.CorrelatedJoinNode;
 import io.prestosql.sql.planner.plan.PlanNode;
 import io.prestosql.sql.tree.Node;
 
@@ -45,17 +45,17 @@ public class CheckSubqueryNodesAreRewritten
                     throw error(applyNode.getCorrelation(), applyNode.getOriginSubquery());
                 });
 
-        searchFrom(plan).where(LateralJoinNode.class::isInstance)
+        searchFrom(plan).where(CorrelatedJoinNode.class::isInstance)
                 .findFirst()
                 .ifPresent(node -> {
-                    LateralJoinNode lateralJoinNode = (LateralJoinNode) node;
-                    throw error(lateralJoinNode.getCorrelation(), lateralJoinNode.getOriginSubquery());
+                    CorrelatedJoinNode correlatedJoinNode = (CorrelatedJoinNode) node;
+                    throw error(correlatedJoinNode.getCorrelation(), correlatedJoinNode.getOriginSubquery());
                 });
 
         return plan;
     }
 
-    private SemanticException error(List<Symbol> correlation, Node originSubquery)
+    private PrestoException error(List<Symbol> correlation, Node originSubquery)
     {
         checkState(!correlation.isEmpty(), "All the non correlated subqueries should be rewritten at this point");
         throw notSupportedException(originSubquery, "Given correlated subquery");

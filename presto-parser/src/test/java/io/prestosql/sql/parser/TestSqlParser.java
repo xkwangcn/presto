@@ -63,6 +63,7 @@ import io.prestosql.sql.tree.Expression;
 import io.prestosql.sql.tree.FetchFirst;
 import io.prestosql.sql.tree.Format;
 import io.prestosql.sql.tree.FunctionCall;
+import io.prestosql.sql.tree.FunctionCall.NullTreatment;
 import io.prestosql.sql.tree.GenericLiteral;
 import io.prestosql.sql.tree.Grant;
 import io.prestosql.sql.tree.GrantRoles;
@@ -77,6 +78,7 @@ import io.prestosql.sql.tree.Intersect;
 import io.prestosql.sql.tree.IntervalLiteral;
 import io.prestosql.sql.tree.IntervalLiteral.IntervalField;
 import io.prestosql.sql.tree.IntervalLiteral.Sign;
+import io.prestosql.sql.tree.IsNullPredicate;
 import io.prestosql.sql.tree.Isolation;
 import io.prestosql.sql.tree.Join;
 import io.prestosql.sql.tree.JoinOn;
@@ -127,6 +129,7 @@ import io.prestosql.sql.tree.ShowSchemas;
 import io.prestosql.sql.tree.ShowSession;
 import io.prestosql.sql.tree.ShowStats;
 import io.prestosql.sql.tree.ShowTables;
+import io.prestosql.sql.tree.SimpleCaseExpression;
 import io.prestosql.sql.tree.SimpleGroupBy;
 import io.prestosql.sql.tree.SingleColumn;
 import io.prestosql.sql.tree.SortItem;
@@ -143,6 +146,8 @@ import io.prestosql.sql.tree.TransactionAccessMode;
 import io.prestosql.sql.tree.Union;
 import io.prestosql.sql.tree.Unnest;
 import io.prestosql.sql.tree.Values;
+import io.prestosql.sql.tree.WhenClause;
+import io.prestosql.sql.tree.Window;
 import io.prestosql.sql.tree.With;
 import io.prestosql.sql.tree.WithQuery;
 import org.testng.annotations.Test;
@@ -332,6 +337,48 @@ public class TestSqlParser
         assertExpression("ROW (1, 'a', true)[1]", new SubscriptExpression(
                 new Row(ImmutableList.of(new LongLiteral("1"), new StringLiteral("a"), new BooleanLiteral("true"))),
                 new LongLiteral("1")));
+    }
+
+    @Test
+    public void testAllColumns()
+    {
+        assertStatement("SELECT * FROM t", simpleQuery(
+                new Select(
+                        false,
+                        ImmutableList.of(
+                                new AllColumns(
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        ImmutableList.of()))),
+                table(QualifiedName.of("t"))));
+
+        assertStatement("SELECT r.* FROM t", simpleQuery(
+                new Select(
+                        false,
+                        ImmutableList.of(
+                                new AllColumns(
+                                        Optional.empty(),
+                                        Optional.of(new Identifier("r")),
+                                        ImmutableList.of()))),
+                table(QualifiedName.of("t"))));
+
+        assertStatement("SELECT ROW (1, 'a', true).*", simpleQuery(
+                new Select(
+                        false,
+                        ImmutableList.of(
+                                new AllColumns(
+                                        Optional.empty(),
+                                        Optional.of(new Row(ImmutableList.of(new LongLiteral("1"), new StringLiteral("a"), new BooleanLiteral("true")))),
+                                        ImmutableList.of())))));
+
+        assertStatement("SELECT ROW (1, 'a', true).* AS (f1, f2, f3)", simpleQuery(
+                new Select(
+                        false,
+                        ImmutableList.of(
+                                new AllColumns(
+                                        Optional.empty(),
+                                        Optional.of(new Row(ImmutableList.of(new LongLiteral("1"), new StringLiteral("a"), new BooleanLiteral("true")))),
+                                        ImmutableList.of(new Identifier("f1"), new Identifier("f2"), new Identifier("f3")))))));
     }
 
     @Test
@@ -751,6 +798,20 @@ public class TestSqlParser
 
         assertInvalidExpression("format()", "The 'format' function must have at least two arguments");
         assertInvalidExpression("format('%s')", "The 'format' function must have at least two arguments");
+    }
+
+    @Test
+    public void testCase()
+    {
+        assertExpression(
+                "CASE 1 IS NULL WHEN true THEN 2 ELSE 3 END",
+                new SimpleCaseExpression(
+                        new IsNullPredicate(new LongLiteral("1")),
+                        ImmutableList.<WhenClause>of(
+                                new WhenClause(
+                                        new BooleanLiteral("true"),
+                                        new LongLiteral("2"))),
+                        Optional.of(new LongLiteral("3"))));
     }
 
     @Test
@@ -1734,9 +1795,9 @@ public class TestSqlParser
                         QualifiedName.of("t"),
                         new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier("u")),
                         false));
-        assertStatement("GRANT taco ON \"t\" TO ROLE \"public\" WITH GRANT OPTION",
+        assertStatement("GRANT DELETE ON \"t\" TO ROLE \"public\" WITH GRANT OPTION",
                 new Grant(
-                        Optional.of(ImmutableList.of("taco")),
+                        Optional.of(ImmutableList.of("DELETE")),
                         false,
                         QualifiedName.of("t"),
                         new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("public")),
@@ -1767,10 +1828,10 @@ public class TestSqlParser
                         true,
                         QualifiedName.of("t"),
                         new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier("u"))));
-        assertStatement("REVOKE taco ON TABLE \"t\" FROM \"u\"",
+        assertStatement("REVOKE DELETE ON TABLE \"t\" FROM \"u\"",
                 new Revoke(
                         false,
-                        Optional.of(ImmutableList.of("taco")),
+                        Optional.of(ImmutableList.of("DELETE")),
                         true,
                         QualifiedName.of("t"),
                         new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("u"))));
@@ -1789,7 +1850,6 @@ public class TestSqlParser
 
     @Test
     public void testShowRoles()
-            throws Exception
     {
         assertStatement("SHOW ROLES",
                 new ShowRoles(Optional.empty(), false));
@@ -2330,6 +2390,7 @@ public class TestSqlParser
                         new QuerySpecification(
                                 selectList(
                                         new FunctionCall(
+                                                Optional.empty(),
                                                 QualifiedName.of("SUM"),
                                                 Optional.empty(),
                                                 Optional.of(new ComparisonExpression(
@@ -2338,6 +2399,7 @@ public class TestSqlParser
                                                         new LongLiteral("4"))),
                                                 Optional.empty(),
                                                 false,
+                                                Optional.empty(),
                                                 ImmutableList.of(new Identifier("x")))),
                                 Optional.empty(),
                                 Optional.empty(),
@@ -2379,11 +2441,13 @@ public class TestSqlParser
     {
         assertExpression("array_agg(x ORDER BY x DESC)",
                 new FunctionCall(
+                        Optional.empty(),
                         QualifiedName.of("array_agg"),
                         Optional.empty(),
                         Optional.empty(),
                         Optional.of(new OrderBy(ImmutableList.of(new SortItem(identifier("x"), DESCENDING, UNDEFINED)))),
                         false,
+                        Optional.empty(),
                         ImmutableList.of(identifier("x"))));
         assertStatement("SELECT array_agg(x ORDER BY t.y) FROM t",
                 new Query(
@@ -2391,11 +2455,13 @@ public class TestSqlParser
                         new QuerySpecification(
                                 selectList(
                                         new FunctionCall(
+                                                Optional.empty(),
                                                 QualifiedName.of("array_agg"),
                                                 Optional.empty(),
                                                 Optional.empty(),
                                                 Optional.of(new OrderBy(ImmutableList.of(new SortItem(new DereferenceExpression(new Identifier("t"), identifier("y")), ASCENDING, UNDEFINED)))),
                                                 false,
+                                                Optional.empty(),
                                                 ImmutableList.of(new Identifier("x")))),
                                 Optional.of(table(QualifiedName.of("t"))),
                                 Optional.empty(),
@@ -2411,7 +2477,6 @@ public class TestSqlParser
 
     @Test
     public void testCreateRole()
-            throws Exception
     {
         assertStatement("CREATE ROLE role", new CreateRole(new Identifier("role"), Optional.empty()));
         assertStatement("CREATE ROLE role1 WITH ADMIN admin",
@@ -2466,7 +2531,6 @@ public class TestSqlParser
 
     @Test
     public void testDropRole()
-            throws Exception
     {
         assertStatement("DROP ROLE role", new DropRole(new Identifier("role")));
         assertStatement("DROP ROLE \"role\"", new DropRole(new Identifier("role")));
@@ -2476,7 +2540,6 @@ public class TestSqlParser
 
     @Test
     public void testGrantRoles()
-            throws Exception
     {
         assertStatement("GRANT role1 TO user1",
                 new GrantRoles(
@@ -2537,7 +2600,6 @@ public class TestSqlParser
 
     @Test
     public void testRevokeRoles()
-            throws Exception
     {
         assertStatement("REVOKE role1 FROM user1",
                 new RevokeRoles(
@@ -2590,12 +2652,36 @@ public class TestSqlParser
 
     @Test
     public void testSetRole()
-            throws Exception
     {
         assertStatement("SET ROLE ALL", new SetRole(SetRole.Type.ALL, Optional.empty()));
         assertStatement("SET ROLE NONE", new SetRole(SetRole.Type.NONE, Optional.empty()));
         assertStatement("SET ROLE role", new SetRole(SetRole.Type.ROLE, Optional.of(new Identifier("role"))));
         assertStatement("SET ROLE \"role\"", new SetRole(SetRole.Type.ROLE, Optional.of(new Identifier("role"))));
+    }
+
+    @Test
+    public void testNullTreatment()
+    {
+        assertExpression("lead(x, 1) ignore nulls over()",
+                new FunctionCall(
+                        Optional.empty(),
+                        QualifiedName.of("lead"),
+                        Optional.of(new Window(ImmutableList.of(), Optional.empty(), Optional.empty())),
+                        Optional.empty(),
+                        Optional.empty(),
+                        false,
+                        Optional.of(NullTreatment.IGNORE),
+                        ImmutableList.of(new Identifier("x"), new LongLiteral("1"))));
+        assertExpression("lead(x, 1) respect nulls over()",
+                new FunctionCall(
+                        Optional.empty(),
+                        QualifiedName.of("lead"),
+                        Optional.of(new Window(ImmutableList.of(), Optional.empty(), Optional.empty())),
+                        Optional.empty(),
+                        Optional.empty(),
+                        false,
+                        Optional.of(NullTreatment.RESPECT),
+                        ImmutableList.of(new Identifier("x"), new LongLiteral("1"))));
     }
 
     private QualifiedName makeQualifiedName(String tableName)
@@ -2632,8 +2718,8 @@ public class TestSqlParser
         if (!parsed.equals(expected)) {
             fail(format("expected\n\n%s\n\nto parse as\n\n%s\n\nbut was\n\n%s\n",
                     indent(input),
-                    indent(formatSql(expected, Optional.empty())),
-                    indent(formatSql(parsed, Optional.empty()))));
+                    indent(formatSql(expected)),
+                    indent(formatSql(parsed))));
         }
     }
 

@@ -23,7 +23,7 @@ public class JdbcMetadataFactory
     private final boolean allowDropTable;
 
     @Inject
-    public JdbcMetadataFactory(JdbcClient jdbcClient, JdbcMetadataConfig config)
+    public JdbcMetadataFactory(@InternalBaseJdbc JdbcClient jdbcClient, JdbcMetadataConfig config)
     {
         this.jdbcClient = requireNonNull(jdbcClient, "jdbcClient is null");
         requireNonNull(config, "config is null");
@@ -32,6 +32,6 @@ public class JdbcMetadataFactory
 
     public JdbcMetadata create()
     {
-        return new JdbcMetadata(jdbcClient, allowDropTable);
+        return new JdbcMetadata(new TransactionScopeCachingJdbcClient(jdbcClient), allowDropTable);
     }
 }

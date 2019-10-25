@@ -21,6 +21,20 @@ The ``||`` operator is used to concatenate an array with an array or an element 
 Array Functions
 ---------------
 
+.. function:: all_match(array(T), function(T,boolean)) -> boolean
+
+    Returns whether all elements of an array match the given predicate. Returns ``true`` if all the elements
+    match the predicate (a special case is when the array is empty); ``false`` if one or more elements don't
+    match; ``NULL`` if the predicate function returns ``NULL`` for one or more elements and ``true`` for all
+    other elements.
+
+.. function:: any_match(array(T), function(T,boolean)) -> boolean
+
+    Returns whether any elements of an array match the given predicate. Returns ``true`` if one or more
+    elements match the predicate; ``false`` if none of the elements matches (a special case is when the
+    array is empty); ``NULL`` if the predicate function returns ``NULL`` for one or more elements and ``false``
+    for all other elements.
+
 .. function:: array_distinct(x) -> array
 
     Remove duplicate values from the array ``x``.
@@ -127,7 +141,9 @@ Array Functions
 .. function:: element_at(array(E), index) -> E
 
     Returns element of ``array`` at given ``index``.
-    If ``index`` > 0, this function provides the same functionality as the SQL-standard subscript operator (``[]``).
+    If ``index`` > 0, this function provides the same functionality as the SQL-standard subscript operator (``[]``),
+    except that the function returns ``NULL`` when accessing an ``index`` larger than array length, whereas
+    the subscript operator would fail in such a case.
     If ``index`` < 0, ``element_at`` accesses elements from the last to the first.
 
 .. function:: filter(array(T), function(T,boolean)) -> array(T)
@@ -152,6 +168,12 @@ Array Functions
         SELECT ngrams(ARRAY['foo', 'bar', 'baz', 'foo'], 4); -- [['foo', 'bar', 'baz', 'foo']]
         SELECT ngrams(ARRAY['foo', 'bar', 'baz', 'foo'], 5); -- [['foo', 'bar', 'baz', 'foo']]
         SELECT ngrams(ARRAY[1, 2, 3, 4], 2); -- [[1, 2], [2, 3], [3, 4]]
+
+.. function:: none_match(array(T), function(T,boolean)) -> boolean
+
+    Returns whether no elements of an array match the given predicate. Returns ``true`` if none of the elements
+    matches the predicate (a special case is when the array is empty); ``false`` if one or more elements match;
+    ``NULL`` if the predicate function returns ``NULL`` for one or more elements and ``false`` for all other elements.
 
 .. function:: reduce(array(T), initialState S, inputFunction(S,T,S), outputFunction(S,R)) -> R
 

@@ -15,17 +15,12 @@ package io.prestosql.plugin.postgresql;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.testing.postgresql.TestingPostgreSqlServer;
 import io.airlift.tpch.TpchTable;
 import io.prestosql.Session;
 import io.prestosql.plugin.tpch.TpchPlugin;
 import io.prestosql.testing.QueryRunner;
 import io.prestosql.tests.DistributedQueryRunner;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -36,9 +31,7 @@ import static io.prestosql.tests.QueryAssertions.copyTpchTables;
 
 public final class PostgreSqlQueryRunner
 {
-    private PostgreSqlQueryRunner()
-    {
-    }
+    private PostgreSqlQueryRunner() {}
 
     private static final String TPCH_SCHEMA = "tpch";
 
@@ -61,8 +54,9 @@ public final class PostgreSqlQueryRunner
             connectorProperties = new HashMap<>(ImmutableMap.copyOf(connectorProperties));
             connectorProperties.putIfAbsent("connection-url", server.getJdbcUrl());
             connectorProperties.putIfAbsent("allow-drop-table", "true");
+            connectorProperties.putIfAbsent("postgresql.include-system-tables", "true");
 
-            createSchema(server.getJdbcUrl(), "tpch");
+            server.execute("CREATE SCHEMA tpch");
 
             queryRunner.installPlugin(new PostgreSqlPlugin());
             queryRunner.createCatalog("postgresql", "postgresql", connectorProperties);
@@ -74,15 +68,6 @@ public final class PostgreSqlQueryRunner
         catch (Throwable e) {
             closeAllSuppress(e, queryRunner, server);
             throw e;
-        }
-    }
-
-    private static void createSchema(String url, String schema)
-            throws SQLException
-    {
-        try (Connection connection = DriverManager.getConnection(url);
-                Statement statement = connection.createStatement()) {
-            statement.execute("CREATE SCHEMA " + schema);
         }
     }
 

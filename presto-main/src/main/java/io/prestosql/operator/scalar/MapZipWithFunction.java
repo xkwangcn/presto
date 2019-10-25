@@ -16,7 +16,7 @@ package io.prestosql.operator.scalar;
 import com.google.common.collect.ImmutableList;
 import io.prestosql.metadata.BoundVariables;
 import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.SqlScalarFunction;
 import io.prestosql.spi.PageBuilder;
@@ -26,7 +26,7 @@ import io.prestosql.spi.block.SingleMapBlock;
 import io.prestosql.spi.type.MapType;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.spi.type.TypeSignatureParameter;
 import io.prestosql.sql.gen.lambda.LambdaFunctionInterface;
 
@@ -38,7 +38,8 @@ import static io.prestosql.metadata.Signature.typeVariable;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.functionTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.TypeSignature.functionType;
+import static io.prestosql.spi.type.TypeSignature.mapType;
 import static io.prestosql.spi.type.TypeUtils.readNativeValue;
 import static io.prestosql.spi.type.TypeUtils.writeNativeValue;
 import static io.prestosql.util.Reflection.methodHandle;
@@ -58,8 +59,11 @@ public final class MapZipWithFunction
                 FunctionKind.SCALAR,
                 ImmutableList.of(typeVariable("K"), typeVariable("V1"), typeVariable("V2"), typeVariable("V3")),
                 ImmutableList.of(),
-                parseTypeSignature("map(K,V3)"),
-                ImmutableList.of(parseTypeSignature("map(K,V1)"), parseTypeSignature("map(K,V2)"), parseTypeSignature("function(K,V1,V2,V3)")),
+                mapType(new TypeSignature("K"), new TypeSignature("V3")),
+                ImmutableList.of(
+                        mapType(new TypeSignature("K"), new TypeSignature("V1")),
+                        mapType(new TypeSignature("K"), new TypeSignature("V2")),
+                        functionType(new TypeSignature("K"), new TypeSignature("V1"), new TypeSignature("V2"), new TypeSignature("V3"))),
                 false));
     }
 
@@ -82,17 +86,17 @@ public final class MapZipWithFunction
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type keyType = boundVariables.getTypeVariable("K");
         Type inputValueType1 = boundVariables.getTypeVariable("V1");
         Type inputValueType2 = boundVariables.getTypeVariable("V2");
         Type outputValueType = boundVariables.getTypeVariable("V3");
-        Type outputMapType = typeManager.getParameterizedType(
+        Type outputMapType = metadata.getParameterizedType(
                 StandardTypes.MAP,
                 ImmutableList.of(
-                        TypeSignatureParameter.of(keyType.getTypeSignature()),
-                        TypeSignatureParameter.of(outputValueType.getTypeSignature())));
+                        TypeSignatureParameter.typeParameter(keyType.getTypeSignature()),
+                        TypeSignatureParameter.typeParameter(outputValueType.getTypeSignature())));
         return new ScalarFunctionImplementation(
                 false,
                 ImmutableList.of(

@@ -22,9 +22,10 @@ import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.connector.ConnectorSplit;
 import io.prestosql.spi.connector.ConnectorSplitManager;
 import io.prestosql.spi.connector.ConnectorSplitSource;
-import io.prestosql.spi.connector.ConnectorTableLayoutHandle;
+import io.prestosql.spi.connector.ConnectorTableHandle;
 import io.prestosql.spi.connector.ConnectorTransactionHandle;
 import io.prestosql.spi.connector.FixedSplitSource;
+import io.prestosql.spi.predicate.TupleDomain;
 
 import javax.inject.Inject;
 
@@ -45,24 +46,37 @@ public class CassandraSplitManager
     private final CassandraSession cassandraSession;
     private final int partitionSizeForBatchSelect;
     private final CassandraTokenSplitManager tokenSplitMgr;
+    private final CassandraPartitionManager partitionManager;
 
     @Inject
     public CassandraSplitManager(
             CassandraClientConfig cassandraClientConfig,
             CassandraSession cassandraSession,
-            CassandraTokenSplitManager tokenSplitMgr)
+            CassandraTokenSplitManager tokenSplitMgr,
+            CassandraPartitionManager partitionManager)
     {
         this.cassandraSession = requireNonNull(cassandraSession, "cassandraSession is null");
         this.partitionSizeForBatchSelect = cassandraClientConfig.getPartitionSizeForBatchSelect();
         this.tokenSplitMgr = tokenSplitMgr;
+        this.partitionManager = requireNonNull(partitionManager, "partitionManager is null");
     }
 
     @Override
-    public ConnectorSplitSource getSplits(ConnectorTransactionHandle transaction, ConnectorSession session, ConnectorTableLayoutHandle layout, SplitSchedulingStrategy splitSchedulingStrategy)
+    public ConnectorSplitSource getSplits(ConnectorTransactionHandle transaction, ConnectorSession session, ConnectorTableHandle tableHandle, SplitSchedulingStrategy splitSchedulingStrategy)
     {
-        CassandraTableLayoutHandle layoutHandle = (CassandraTableLayoutHandle) layout;
-        CassandraTableHandle cassandraTableHandle = layoutHandle.getTable();
-        List<CassandraPartition> partitions = layoutHandle.getPartitions();
+        CassandraTableHandle cassandraTableHandle = (CassandraTableHandle) tableHandle;
+
+        List<CassandraPartition> partitions;
+        String clusteringKeyPredicates;
+        if (cassandraTableHandle.getPartitions().isPresent()) {
+            partitions = cassandraTableHandle.getPartitions().get();
+            clusteringKeyPredicates = cassandraTableHandle.getClusteringKeyPredicates();
+        }
+        else {
+            CassandraPartitionResult partitionResult = partitionManager.getPartitions(cassandraTableHandle, TupleDomain.all());
+            partitions = partitionResult.getPartitions();
+            clusteringKeyPredicates = extractClusteringKeyPredicates(partitionResult, cassandraTableHandle, cassandraSession);
+        }
 
         if (partitions.isEmpty()) {
             return new FixedSplitSource(ImmutableList.of());
@@ -78,7 +92,20 @@ public class CassandraSplitManager
             }
         }
 
-        return new FixedSplitSource(getSplitsForPartitions(cassandraTableHandle, partitions, layoutHandle.getClusteringPredicates()));
+        return new FixedSplitSource(getSplitsForPartitions(cassandraTableHandle, partitions, clusteringKeyPredicates));
+    }
+
+    private static String extractClusteringKeyPredicates(CassandraPartitionResult partitionResult, CassandraTableHandle tableHandle, CassandraSession session)
+    {
+        if (partitionResult.isUnpartitioned()) {
+            return "";
+        }
+
+        CassandraClusteringPredicatesExtractor clusteringPredicatesExtractor = new CassandraClusteringPredicatesExtractor(
+                session.getTable(tableHandle.getSchemaTableName()).getClusteringKeyColumns(),
+                partitionResult.getUnenforcedConstraint(),
+                session.getCassandraVersion());
+        return clusteringPredicatesExtractor.getClusteringKeyPredicates();
     }
 
     private List<ConnectorSplit> getSplitsByTokenRange(CassandraTable table, String partitionId, Optional<Long> sessionSplitsPerNode)

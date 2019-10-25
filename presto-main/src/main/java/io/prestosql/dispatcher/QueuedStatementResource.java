@@ -23,13 +23,14 @@ import io.airlift.units.Duration;
 import io.prestosql.client.QueryError;
 import io.prestosql.client.QueryResults;
 import io.prestosql.client.StatementStats;
+import io.prestosql.dispatcher.DispatcherConfig.HeaderSupport;
 import io.prestosql.execution.ExecutionFailureInfo;
 import io.prestosql.execution.QueryState;
 import io.prestosql.server.HttpRequestSessionContext;
 import io.prestosql.server.SessionContext;
+import io.prestosql.server.protocol.Slug;
 import io.prestosql.spi.ErrorCode;
 import io.prestosql.spi.QueryId;
-import io.prestosql.sql.analyzer.SemanticErrorCode;
 
 import javax.annotation.PreDestroy;
 import javax.annotation.concurrent.GuardedBy;
@@ -70,10 +71,10 @@ import static io.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
 import static io.airlift.http.server.AsyncResponseHandler.bindAsyncResponse;
 import static io.prestosql.execution.QueryState.FAILED;
 import static io.prestosql.execution.QueryState.QUEUED;
+import static io.prestosql.server.protocol.Slug.Context.EXECUTING_QUERY;
+import static io.prestosql.server.protocol.Slug.Context.QUEUED_QUERY;
 import static io.prestosql.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
-import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
-import static java.util.UUID.randomUUID;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -90,6 +91,7 @@ public class QueuedStatementResource
     private static final Ordering<Comparable<Duration>> WAIT_ORDERING = Ordering.natural().nullsLast();
     private static final Duration NO_DURATION = new Duration(0, MILLISECONDS);
 
+    private final HeaderSupport forwardedHeaderSupport;
     private final DispatchManager dispatchManager;
 
     private final Executor responseExecutor;
@@ -100,9 +102,12 @@ public class QueuedStatementResource
 
     @Inject
     public QueuedStatementResource(
+            DispatcherConfig dispatcherConfig,
             DispatchManager dispatchManager,
             DispatchExecutor executor)
     {
+        requireNonNull(dispatcherConfig, "dispatcherConfig is null");
+        this.forwardedHeaderSupport = dispatcherConfig.getForwardedHeaderSupport();
         this.dispatchManager = requireNonNull(dispatchManager, "dispatchManager is null");
 
         requireNonNull(dispatchManager, "dispatchManager is null");
@@ -152,7 +157,7 @@ public class QueuedStatementResource
             throw badRequest(BAD_REQUEST, "SQL statement is empty");
         }
 
-        SessionContext sessionContext = new HttpRequestSessionContext(servletRequest);
+        SessionContext sessionContext = new HttpRequestSessionContext(forwardedHeaderSupport, servletRequest);
         Query query = new Query(statement, sessionContext, dispatchManager);
         queries.put(query.getQueryId(), query);
 
@@ -171,7 +176,7 @@ public class QueuedStatementResource
             @Context UriInfo uriInfo,
             @Suspended AsyncResponse asyncResponse)
     {
-        Query query = getQuery(queryId, slug);
+        Query query = getQuery(queryId, slug, token);
 
         // wait for query to be dispatched, up to the wait timeout
         ListenableFuture<?> futureStateChange = addTimeout(
@@ -202,15 +207,15 @@ public class QueuedStatementResource
             @PathParam("slug") String slug,
             @PathParam("token") long token)
     {
-        getQuery(queryId, slug)
+        getQuery(queryId, slug, token)
                 .cancel();
         return Response.noContent().build();
     }
 
-    private Query getQuery(QueryId queryId, String slug)
+    private Query getQuery(QueryId queryId, String slug, long token)
     {
         Query query = queries.get(queryId);
-        if (query == null || !query.getSlug().equals(slug)) {
+        if (query == null || !query.getSlug().isValid(QUEUED_QUERY, slug, token)) {
             throw badRequest(NOT_FOUND, "Query not found");
         }
         return query;
@@ -225,13 +230,13 @@ public class QueuedStatementResource
                 .build();
     }
 
-    private static URI getQueuedUri(QueryId queryId, String slug, long token, UriInfo uriInfo, String xForwardedProto)
+    private static URI getQueuedUri(QueryId queryId, Slug slug, long token, UriInfo uriInfo, String xForwardedProto)
     {
         return uriInfo.getBaseUriBuilder()
                 .scheme(getScheme(xForwardedProto, uriInfo))
                 .replacePath("/v1/statement/queued/")
                 .path(queryId.toString())
-                .path(slug)
+                .path(slug.makeSlug(QUEUED_QUERY, token))
                 .path(String.valueOf(token))
                 .replaceQuery("")
                 .build();
@@ -286,7 +291,7 @@ public class QueuedStatementResource
         private final SessionContext sessionContext;
         private final DispatchManager dispatchManager;
         private final QueryId queryId;
-        private final String slug = "x" + randomUUID().toString().toLowerCase(ENGLISH).replace("-", "");
+        private final Slug slug = Slug.createNew();
         private final AtomicLong lastToken = new AtomicLong();
 
         @GuardedBy("this")
@@ -305,7 +310,7 @@ public class QueuedStatementResource
             return queryId;
         }
 
-        public String getSlug()
+        public Slug getSlug()
         {
             return slug;
         }
@@ -408,7 +413,7 @@ public class QueuedStatementResource
             return uriBuilderFrom(coordinatorUri)
                     .appendPath("/v1/statement/executing")
                     .appendPath(queryId.toString())
-                    .appendPath(slug)
+                    .appendPath(slug.makeSlug(EXECUTING_QUERY, 0))
                     .appendPath("0")
                     .build();
         }
@@ -429,7 +434,6 @@ public class QueuedStatementResource
                     null,
                     errorCode.getCode(),
                     errorCode.getName(),
-                    executionFailureInfo.getSemanticErrorCode().map(SemanticErrorCode::name),
                     errorCode.getType().toString(),
                     executionFailureInfo.getErrorLocation(),
                     executionFailureInfo.toFailureInfo());

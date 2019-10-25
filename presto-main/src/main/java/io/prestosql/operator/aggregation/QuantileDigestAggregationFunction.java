@@ -17,7 +17,7 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.bytecode.DynamicClassLoader;
 import io.airlift.stats.QuantileDigest;
 import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.FunctionRegistry;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.SqlAggregationFunction;
 import io.prestosql.operator.aggregation.state.QuantileDigestState;
 import io.prestosql.operator.aggregation.state.QuantileDigestStateFactory;
@@ -26,12 +26,12 @@ import io.prestosql.spi.block.BlockBuilder;
 import io.prestosql.spi.type.QuantileDigestType;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
 import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.spi.type.TypeSignatureParameter;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -49,7 +49,7 @@ import static io.prestosql.operator.scalar.QuantileDigestFunctions.verifyAccurac
 import static io.prestosql.operator.scalar.QuantileDigestFunctions.verifyWeight;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.DoubleType.DOUBLE;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.TypeSignature.parametricType;
 import static io.prestosql.util.Reflection.methodHandle;
 import static java.lang.Float.intBitsToFloat;
 import static java.lang.String.format;
@@ -58,9 +58,9 @@ import static java.lang.invoke.MethodHandles.insertArguments;
 public final class QuantileDigestAggregationFunction
         extends SqlAggregationFunction
 {
-    public static final QuantileDigestAggregationFunction QDIGEST_AGG = new QuantileDigestAggregationFunction(parseTypeSignature("V"));
-    public static final QuantileDigestAggregationFunction QDIGEST_AGG_WITH_WEIGHT = new QuantileDigestAggregationFunction(parseTypeSignature("V"), parseTypeSignature(StandardTypes.BIGINT));
-    public static final QuantileDigestAggregationFunction QDIGEST_AGG_WITH_WEIGHT_AND_ERROR = new QuantileDigestAggregationFunction(parseTypeSignature("V"), parseTypeSignature(StandardTypes.BIGINT), parseTypeSignature(StandardTypes.DOUBLE));
+    public static final QuantileDigestAggregationFunction QDIGEST_AGG = new QuantileDigestAggregationFunction(new TypeSignature("V"));
+    public static final QuantileDigestAggregationFunction QDIGEST_AGG_WITH_WEIGHT = new QuantileDigestAggregationFunction(new TypeSignature("V"), BIGINT.getTypeSignature());
+    public static final QuantileDigestAggregationFunction QDIGEST_AGG_WITH_WEIGHT_AND_ERROR = new QuantileDigestAggregationFunction(new TypeSignature("V"), BIGINT.getTypeSignature(), DOUBLE.getTypeSignature());
     public static final String NAME = "qdigest_agg";
 
     private static final MethodHandle INPUT_DOUBLE = methodHandle(QuantileDigestAggregationFunction.class, "inputDouble", QuantileDigestState.class, double.class, long.class, double.class);
@@ -75,7 +75,7 @@ public final class QuantileDigestAggregationFunction
                 NAME,
                 ImmutableList.of(comparableTypeParameter("V")),
                 ImmutableList.of(),
-                parseTypeSignature("qdigest(V)"),
+                parametricType("qdigest", new TypeSignature("V")),
                 ImmutableList.copyOf(typeSignatures));
     }
 
@@ -86,12 +86,12 @@ public final class QuantileDigestAggregationFunction
     }
 
     @Override
-    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, Metadata metadata)
     {
         Type valueType = boundVariables.getTypeVariable("V");
-        QuantileDigestType outputType = (QuantileDigestType) typeManager.getParameterizedType(
+        QuantileDigestType outputType = (QuantileDigestType) metadata.getParameterizedType(
                 StandardTypes.QDIGEST,
-                ImmutableList.of(TypeSignatureParameter.of(valueType.getTypeSignature())));
+                ImmutableList.of(TypeSignatureParameter.typeParameter(valueType.getTypeSignature())));
         return generateAggregation(valueType, outputType, arity);
     }
 
@@ -106,6 +106,7 @@ public final class QuantileDigestAggregationFunction
                 generateAggregationName(NAME, outputType.getTypeSignature(), inputTypes.stream().map(Type::getTypeSignature).collect(toImmutableList())),
                 createInputParameterMetadata(inputTypes),
                 getMethodHandle(valueType, arity),
+                Optional.empty(),
                 COMBINE_FUNCTION,
                 OUTPUT_FUNCTION.bindTo(stateSerializer),
                 ImmutableList.of(new AccumulatorStateDescriptor(

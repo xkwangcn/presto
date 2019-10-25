@@ -16,9 +16,7 @@ package io.prestosql.operator.scalar;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.SliceOutput;
-import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.MetadataManager;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.operator.DriverYieldSignal;
 import io.prestosql.operator.project.PageProcessor;
 import io.prestosql.spi.Page;
@@ -53,6 +51,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import static io.prestosql.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.DoubleType.DOUBLE;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
@@ -110,12 +109,12 @@ public class BenchmarkJsonToArrayCast
                     throw new UnsupportedOperationException();
             }
 
-            Signature signature = new Signature("$operator$CAST", FunctionKind.SCALAR, new ArrayType(elementType).getTypeSignature(), JSON.getTypeSignature());
+            Metadata metadata = createTestMetadataManager();
+            List<RowExpression> projections = ImmutableList.of(new CallExpression(
+                    metadata.getCoercion(JSON, new ArrayType(elementType)),
+                    new ArrayType(elementType),
+                    ImmutableList.of(field(0, JSON))));
 
-            List<RowExpression> projections = ImmutableList.of(
-                    new CallExpression(signature, new ArrayType(elementType), ImmutableList.of(field(0, JSON))));
-
-            MetadataManager metadata = MetadataManager.createTestMetadataManager();
             pageProcessor = new ExpressionCompiler(metadata, new PageFunctionCompiler(metadata, 0))
                     .compilePageProcessor(Optional.empty(), projections)
                     .get();

@@ -23,7 +23,7 @@ function retry() {
 }
 
 function hadoop_master_container(){
-  environment_compose ps -q hadoop-master
+  environment_compose ps -q hadoop-master | grep .
 }
 
 function check_hadoop() {
@@ -77,13 +77,8 @@ function terminate() {
   exit 130
 }
 
-function usage() {
-  echo "Usage: run_on_docker.sh <`getAvailableEnvironments | tr '\n' '|' | sed 's/|$//'`> <product test args>"
-  exit 1
- }
-
 if [[ $# == 0 ]]; then
-  usage
+  usage "<product test arguments>"
 fi
 
 ENVIRONMENT=$1
@@ -99,6 +94,7 @@ docker-compose version
 docker version
 
 stop_all_containers
+remove_empty_property_files
 
 if [[ ${CONTINUOUS_INTEGRATION:-false} = true ]]; then
     environment_compose pull --quiet

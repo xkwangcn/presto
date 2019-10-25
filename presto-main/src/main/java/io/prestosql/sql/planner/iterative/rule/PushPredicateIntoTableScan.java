@@ -83,7 +83,7 @@ public class PushPredicateIntoTableScan
     {
         this.metadata = requireNonNull(metadata, "metadata is null");
         this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
-        this.domainTranslator = new DomainTranslator(new LiteralEncoder(metadata.getBlockEncodingSerde()));
+        this.domainTranslator = new DomainTranslator(new LiteralEncoder(metadata));
     }
 
     @Override
@@ -148,6 +148,7 @@ public class PushPredicateIntoTableScan
     {
         // don't include non-deterministic predicates
         Expression deterministicPredicate = filterDeterministicConjuncts(predicate);
+        Expression nonDeterministicPredicate = filterNonDeterministicConjuncts(predicate);
 
         DomainTranslator.ExtractionResult decomposedPredicate = DomainTranslator.fromPredicate(
                 metadata,
@@ -162,7 +163,8 @@ public class PushPredicateIntoTableScan
         Map<ColumnHandle, Symbol> assignments = ImmutableBiMap.copyOf(node.getAssignments()).inverse();
 
         Constraint constraint;
-        if (pruneWithPredicateExpression) {
+        // use evaluator only when there is some predicate which could not be translated into tuple domain
+        if (pruneWithPredicateExpression && !TRUE_LITERAL.equals(decomposedPredicate.getRemainingExpression())) {
             LayoutConstraintEvaluator evaluator = new LayoutConstraintEvaluator(
                     metadata,
                     typeAnalyzer,
@@ -185,11 +187,25 @@ public class PushPredicateIntoTableScan
         TableHandle newTable;
         TupleDomain<ColumnHandle> remainingFilter;
         if (!metadata.usesLegacyTableLayouts(session, node.getTable())) {
+            // check if new domain is wider than domain already provided by table scan
+            if (!constraint.predicate().isPresent() && newDomain.contains(node.getEnforcedConstraint())) {
+                Expression resultingPredicate = createResultingPredicate(
+                        TRUE_LITERAL,
+                        nonDeterministicPredicate,
+                        decomposedPredicate.getRemainingExpression());
+
+                if (!TRUE_LITERAL.equals(resultingPredicate)) {
+                    return Optional.of(new FilterNode(idAllocator.getNextId(), node, resultingPredicate));
+                }
+
+                return Optional.of(node);
+            }
+
             if (newDomain.isNone()) {
                 // TODO: DomainTranslator.fromPredicate can infer that the expression is "false" in some cases (TupleDomain.none()).
                 // This should move to another rule that simplifies the filter using that logic and then rely on RemoveTrivialFilters
                 // to turn the subtree into a Values node
-                return Optional.of(new ValuesNode(idAllocator.getNextId(), node.getOutputSymbols(), ImmutableList.of()));
+                return Optional.of(new ValuesNode(node.getId(), node.getOutputSymbols(), ImmutableList.of()));
             }
 
             Optional<ConstraintApplicationResult<TableHandle>> result = metadata.applyFilter(session, node.getTable(), constraint);
@@ -201,7 +217,7 @@ public class PushPredicateIntoTableScan
             newTable = result.get().getHandle();
 
             if (metadata.getTableProperties(session, newTable).getPredicate().isNone()) {
-                return Optional.of(new ValuesNode(idAllocator.getNextId(), node.getOutputSymbols(), ImmutableList.of()));
+                return Optional.of(new ValuesNode(node.getId(), node.getOutputSymbols(), ImmutableList.of()));
             }
 
             remainingFilter = result.get().getRemainingFilter();
@@ -216,7 +232,7 @@ public class PushPredicateIntoTableScan
                             .collect(toImmutableSet())));
 
             if (!layout.isPresent() || layout.get().getTableProperties().getPredicate().isNone()) {
-                return Optional.of(new ValuesNode(idAllocator.getNextId(), node.getOutputSymbols(), ImmutableList.of()));
+                return Optional.of(new ValuesNode(node.getId(), node.getOutputSymbols(), ImmutableList.of()));
             }
 
             newTable = layout.get().getNewTableHandle();
@@ -230,6 +246,23 @@ public class PushPredicateIntoTableScan
                 node.getAssignments(),
                 computeEnforced(newDomain, remainingFilter));
 
+        Expression resultingPredicate = createResultingPredicate(
+                domainTranslator.toPredicate(remainingFilter.transform(assignments::get)),
+                nonDeterministicPredicate,
+                decomposedPredicate.getRemainingExpression());
+
+        if (!TRUE_LITERAL.equals(resultingPredicate)) {
+            return Optional.of(new FilterNode(idAllocator.getNextId(), tableScan, resultingPredicate));
+        }
+
+        return Optional.of(tableScan);
+    }
+
+    static Expression createResultingPredicate(
+            Expression unenforcedConstraints,
+            Expression nonDeterministicPredicate,
+            Expression remainingDecomposedPredicate)
+    {
         // The order of the arguments to combineConjuncts matters:
         // * Unenforced constraints go first because they can only be simple column references,
         //   which are not prone to logic errors such as out-of-bound access, div-by-zero, etc.
@@ -238,16 +271,7 @@ public class PushPredicateIntoTableScan
         // * Short of implementing the previous bullet point, the current order of non-deterministic expressions
         //   and non-TupleDomain-expressible expressions should be retained. Changing the order can lead
         //   to failures of previously successful queries.
-        Expression resultingPredicate = combineConjuncts(
-                domainTranslator.toPredicate(remainingFilter.transform(assignments::get)),
-                filterNonDeterministicConjuncts(predicate),
-                decomposedPredicate.getRemainingExpression());
-
-        if (!TRUE_LITERAL.equals(resultingPredicate)) {
-            return Optional.of(new FilterNode(idAllocator.getNextId(), tableScan, resultingPredicate));
-        }
-
-        return Optional.of(tableScan);
+        return combineConjuncts(unenforcedConstraints, nonDeterministicPredicate, remainingDecomposedPredicate);
     }
 
     private static class LayoutConstraintEvaluator

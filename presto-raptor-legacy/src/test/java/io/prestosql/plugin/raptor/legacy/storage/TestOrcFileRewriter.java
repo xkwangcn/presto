@@ -25,7 +25,7 @@ import io.prestosql.spi.type.ArrayType;
 import io.prestosql.spi.type.DecimalType;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeSignature;
+import io.prestosql.spi.type.TypeId;
 import io.prestosql.spi.type.TypeSignatureParameter;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
@@ -86,9 +86,9 @@ public class TestOrcFileRewriter
     {
         ArrayType arrayType = new ArrayType(BIGINT);
         ArrayType arrayOfArrayType = new ArrayType(arrayType);
-        Type mapType = createTestMetadataManager().getTypeManager().getParameterizedType(StandardTypes.MAP, ImmutableList.of(
-                TypeSignatureParameter.of(createVarcharType(5).getTypeSignature()),
-                TypeSignatureParameter.of(BOOLEAN.getTypeSignature())));
+        Type mapType = createTestMetadataManager().getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                TypeSignatureParameter.typeParameter(createVarcharType(5).getTypeSignature()),
+                TypeSignatureParameter.typeParameter(BOOLEAN.getTypeSignature())));
         List<Long> columnIds = ImmutableList.of(3L, 7L, 9L, 10L, 11L, 12L);
         DecimalType decimalType = DecimalType.createDecimalType(4, 4);
 
@@ -173,13 +173,13 @@ public class TestOrcFileRewriter
             assertEquals(reader.nextBatch(), -1);
 
             OrcFileMetadata orcFileMetadata = METADATA_CODEC.fromJson(reader.getUserMetadata().get(OrcFileMetadata.KEY).getBytes());
-            assertEquals(orcFileMetadata, new OrcFileMetadata(ImmutableMap.<Long, TypeSignature>builder()
-                    .put(3L, BIGINT.getTypeSignature())
-                    .put(7L, createVarcharType(20).getTypeSignature())
-                    .put(9L, arrayType.getTypeSignature())
-                    .put(10L, mapType.getTypeSignature())
-                    .put(11L, arrayOfArrayType.getTypeSignature())
-                    .put(12L, decimalType.getTypeSignature())
+            assertEquals(orcFileMetadata, new OrcFileMetadata(ImmutableMap.<Long, TypeId>builder()
+                    .put(3L, BIGINT.getTypeId())
+                    .put(7L, createVarcharType(20).getTypeId())
+                    .put(9L, arrayType.getTypeId())
+                    .put(10L, mapType.getTypeId())
+                    .put(11L, arrayOfArrayType.getTypeId())
+                    .put(12L, decimalType.getTypeId())
                     .build()));
         }
 
@@ -245,13 +245,13 @@ public class TestOrcFileRewriter
             assertEquals(reader.nextBatch(), -1);
 
             OrcFileMetadata orcFileMetadata = METADATA_CODEC.fromJson(reader.getUserMetadata().get(OrcFileMetadata.KEY).getBytes());
-            assertEquals(orcFileMetadata, new OrcFileMetadata(ImmutableMap.<Long, TypeSignature>builder()
-                    .put(3L, BIGINT.getTypeSignature())
-                    .put(7L, createVarcharType(20).getTypeSignature())
-                    .put(9L, arrayType.getTypeSignature())
-                    .put(10L, mapType.getTypeSignature())
-                    .put(11L, arrayOfArrayType.getTypeSignature())
-                    .put(12L, decimalType.getTypeSignature())
+            assertEquals(orcFileMetadata, new OrcFileMetadata(ImmutableMap.<Long, TypeId>builder()
+                    .put(3L, BIGINT.getTypeId())
+                    .put(7L, createVarcharType(20).getTypeId())
+                    .put(9L, arrayType.getTypeId())
+                    .put(10L, mapType.getTypeId())
+                    .put(11L, arrayOfArrayType.getTypeId())
+                    .put(12L, decimalType.getTypeId())
                     .build()));
         }
     }

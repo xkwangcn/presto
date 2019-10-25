@@ -22,11 +22,12 @@ import com.google.common.collect.Streams;
 import com.google.common.io.CharStreams;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.prestosql.plugin.hive.HdfsEnvironment.HdfsContext;
-import io.prestosql.plugin.hive.HiveBucketing.HiveBucketFilter;
 import io.prestosql.plugin.hive.HiveSplit.BucketConversion;
 import io.prestosql.plugin.hive.metastore.Column;
 import io.prestosql.plugin.hive.metastore.Partition;
 import io.prestosql.plugin.hive.metastore.Table;
+import io.prestosql.plugin.hive.util.HiveBucketing.BucketingVersion;
+import io.prestosql.plugin.hive.util.HiveBucketing.HiveBucketFilter;
 import io.prestosql.plugin.hive.util.HiveFileIterator;
 import io.prestosql.plugin.hive.util.HiveFileIterator.NestedDirectoryNotAllowedException;
 import io.prestosql.plugin.hive.util.InternalHiveSplitFactory;
@@ -64,6 +65,7 @@ import java.util.OptionalInt;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Executor;
+import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.IntPredicate;
 import java.util.regex.Matcher;
@@ -79,17 +81,17 @@ import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_INVALID_METADATA;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_INVALID_PARTITION_VALUE;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_UNKNOWN_ERROR;
 import static io.prestosql.plugin.hive.HiveSessionProperties.isForceLocalScheduling;
-import static io.prestosql.plugin.hive.HiveUtil.checkCondition;
-import static io.prestosql.plugin.hive.HiveUtil.getFooterCount;
-import static io.prestosql.plugin.hive.HiveUtil.getHeaderCount;
-import static io.prestosql.plugin.hive.HiveUtil.getInputFormat;
-import static io.prestosql.plugin.hive.S3SelectPushdown.shouldEnablePushdownForTable;
 import static io.prestosql.plugin.hive.metastore.MetastoreUtil.getHiveSchema;
 import static io.prestosql.plugin.hive.metastore.MetastoreUtil.getPartitionLocation;
+import static io.prestosql.plugin.hive.s3select.S3SelectPushdown.shouldEnablePushdownForTable;
 import static io.prestosql.plugin.hive.util.ConfigurationUtils.toJobConf;
 import static io.prestosql.plugin.hive.util.HiveFileIterator.NestedDirectoryPolicy.FAIL;
 import static io.prestosql.plugin.hive.util.HiveFileIterator.NestedDirectoryPolicy.IGNORED;
 import static io.prestosql.plugin.hive.util.HiveFileIterator.NestedDirectoryPolicy.RECURSE;
+import static io.prestosql.plugin.hive.util.HiveUtil.checkCondition;
+import static io.prestosql.plugin.hive.util.HiveUtil.getFooterCount;
+import static io.prestosql.plugin.hive.util.HiveUtil.getHeaderCount;
+import static io.prestosql.plugin.hive.util.HiveUtil.getInputFormat;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.Integer.parseInt;
 import static java.lang.Math.max;
@@ -137,7 +139,7 @@ public class BackgroundHiveSplitLoader
     // Implications:
     // * if you hold a read lock but not a write lock, you can do any of the above three operations, but you may
     //   see a series of operations involving two or more of the operations carried out half way.
-    private final ReentrantReadWriteLock taskExecutionLock = new ReentrantReadWriteLock();
+    private final ReadWriteLock taskExecutionLock = new ReentrantReadWriteLock();
 
     private HiveSplitSource hiveSplitSource;
     private volatile boolean stopped;
@@ -341,11 +343,12 @@ public class BackgroundHiveSplitLoader
             Optional<HiveBucketProperty> partitionBucketProperty = partition.getPartition().get().getStorage().getBucketProperty();
             if (tableBucketInfo.isPresent() && partitionBucketProperty.isPresent()) {
                 int readBucketCount = tableBucketInfo.get().getReadBucketCount();
+                BucketingVersion bucketingVersion = partitionBucketProperty.get().getBucketingVersion(); // TODO can partition's bucketing_version be different from table's?
                 int partitionBucketCount = partitionBucketProperty.get().getBucketCount();
                 // Validation was done in HiveSplitManager#getPartitionMetadata.
                 // Here, it's just trying to see if its needs the BucketConversion.
                 if (readBucketCount != partitionBucketCount) {
-                    bucketConversion = Optional.of(new BucketConversion(readBucketCount, partitionBucketCount, tableBucketInfo.get().getBucketColumns()));
+                    bucketConversion = Optional.of(new BucketConversion(bucketingVersion, readBucketCount, partitionBucketCount, tableBucketInfo.get().getBucketColumns()));
                     if (readBucketCount > partitionBucketCount) {
                         bucketConversionRequiresWorkerParticipation = true;
                     }

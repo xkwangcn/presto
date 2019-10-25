@@ -15,10 +15,9 @@ package io.prestosql.sql.planner.planprinter;
 
 import io.airlift.slice.Slice;
 import io.prestosql.Session;
-import io.prestosql.metadata.FunctionRegistry;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.OperatorNotFoundException;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.spi.type.Type;
 import io.prestosql.sql.InterpretedFunctionInvoker;
 
@@ -53,9 +52,8 @@ public final class ValuePrinter
             return "NULL";
         }
 
-        FunctionRegistry functionRegistry = metadata.getFunctionRegistry();
-        Signature coercion = functionRegistry.getCoercion(type.getTypeSignature(), VARCHAR.getTypeSignature());
-        Slice coerced = (Slice) new InterpretedFunctionInvoker(functionRegistry).invoke(coercion, session.toConnectorSession(), value);
+        ResolvedFunction coercion = metadata.getCoercion(type, VARCHAR);
+        Slice coerced = (Slice) new InterpretedFunctionInvoker(metadata).invoke(coercion, session.toConnectorSession(), value);
         return coerced.toStringUtf8();
     }
 }

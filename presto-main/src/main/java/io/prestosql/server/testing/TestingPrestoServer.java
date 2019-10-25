@@ -60,6 +60,7 @@ import io.prestosql.security.AccessControlManager;
 import io.prestosql.server.GracefulShutdownHandler;
 import io.prestosql.server.PluginManager;
 import io.prestosql.server.ServerMainModule;
+import io.prestosql.server.SessionPropertyDefaults;
 import io.prestosql.server.ShutdownAction;
 import io.prestosql.server.security.ServerSecurityModule;
 import io.prestosql.spi.Plugin;
@@ -94,7 +95,6 @@ import java.util.concurrent.CountDownLatch;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.nullToEmpty;
-import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.airlift.discovery.client.ServiceAnnouncement.serviceAnnouncement;
@@ -121,6 +121,7 @@ public class TestingPrestoServer
     private final TestingAccessControlManager accessControl;
     private final ProcedureTester procedureTester;
     private final Optional<InternalResourceGroupManager<?>> resourceGroupManager;
+    private final SessionPropertyDefaults sessionPropertyDefaults;
     private final SplitManager splitManager;
     private final PageSourceManager pageSourceManager;
     private final NodePartitioningManager nodePartitioningManager;
@@ -164,19 +165,16 @@ public class TestingPrestoServer
     }
 
     public TestingPrestoServer()
-            throws Exception
     {
         this(ImmutableList.of());
     }
 
     public TestingPrestoServer(List<Module> additionalModules)
-            throws Exception
     {
         this(true, ImmutableMap.of(), null, null, new SqlParserOptions(), additionalModules, Optional.empty());
     }
 
     public TestingPrestoServer(Map<String, String> properties)
-            throws Exception
     {
         this(true, properties, null, null, new SqlParserOptions(), ImmutableList.of(), Optional.empty());
     }
@@ -189,7 +187,6 @@ public class TestingPrestoServer
             SqlParserOptions parserOptions,
             List<Module> additionalModules,
             Optional<Path> baseDataDir)
-            throws Exception
     {
         this.coordinator = coordinator;
 
@@ -284,6 +281,7 @@ public class TestingPrestoServer
             dispatchManager = injector.getInstance(DispatchManager.class);
             queryManager = (SqlQueryManager) injector.getInstance(QueryManager.class);
             resourceGroupManager = Optional.of(injector.getInstance(InternalResourceGroupManager.class));
+            sessionPropertyDefaults = injector.getInstance(SessionPropertyDefaults.class);
             nodePartitioningManager = injector.getInstance(NodePartitioningManager.class);
             clusterMemoryManager = injector.getInstance(ClusterMemoryManager.class);
             statsCalculator = injector.getInstance(StatsCalculator.class);
@@ -292,6 +290,7 @@ public class TestingPrestoServer
             dispatchManager = null;
             queryManager = null;
             resourceGroupManager = Optional.empty();
+            sessionPropertyDefaults = null;
             nodePartitioningManager = null;
             clusterMemoryManager = null;
             statsCalculator = null;
@@ -317,10 +316,6 @@ public class TestingPrestoServer
             if (lifeCycleManager != null) {
                 lifeCycleManager.stop();
             }
-        }
-        catch (Exception e) {
-            throwIfUnchecked(e);
-            throw new RuntimeException(e);
         }
         finally {
             if (isDirectory(baseDataDir) && !preserveData) {
@@ -361,7 +356,7 @@ public class TestingPrestoServer
 
     public CatalogName createCatalog(String catalogName, String connectorName, Map<String, String> properties)
     {
-        CatalogName catalog = connectorManager.createConnection(catalogName, connectorName, properties);
+        CatalogName catalog = connectorManager.createCatalog(catalogName, connectorName, properties);
         updateConnectorIdAnnouncement(announcer, catalog, nodeManager);
         return catalog;
     }
@@ -436,6 +431,11 @@ public class TestingPrestoServer
     public Optional<InternalResourceGroupManager<?>> getResourceGroupManager()
     {
         return resourceGroupManager;
+    }
+
+    public SessionPropertyDefaults getSessionPropertyDefaults()
+    {
+        return sessionPropertyDefaults;
     }
 
     public NodePartitioningManager getNodePartitioningManager()

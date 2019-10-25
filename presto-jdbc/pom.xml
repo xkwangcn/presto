@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.prestosql</groupId>
         <artifactId>presto-root</artifactId>
-        <version>315</version>
+        <version>322</version>
     </parent>
 
     <artifactId>presto-jdbc</artifactId>
@@ -203,10 +203,6 @@
                                 <relocation>
                                     <pattern>javax.inject</pattern>
                                     <shadedPattern>${shadeBase}.inject</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>org.openjdk.jol</pattern>
-                                    <shadedPattern>${shadeBase}.jol</shadedPattern>
                                 </relocation>
                                 <relocation>
                                     <pattern>org.joda.time</pattern>

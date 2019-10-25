@@ -15,11 +15,13 @@ package io.prestosql.server.security;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.configuration.testing.ConfigAssertions;
 import org.testng.annotations.Test;
 
 import java.util.Map;
 
+import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
+import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
 import static io.prestosql.server.security.SecurityConfig.AuthenticationType.KERBEROS;
 import static io.prestosql.server.security.SecurityConfig.AuthenticationType.PASSWORD;
 
@@ -28,7 +30,8 @@ public class TestSecurityConfig
     @Test
     public void testDefaults()
     {
-        ConfigAssertions.assertRecordedDefaults(ConfigAssertions.recordDefaults(SecurityConfig.class)
+        assertRecordedDefaults(recordDefaults(SecurityConfig.class)
+                .setEnableForwardingHttps(false)
                 .setAuthenticationTypes(""));
     }
 
@@ -37,11 +40,13 @@ public class TestSecurityConfig
     {
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
                 .put("http-server.authentication.type", "KERBEROS,PASSWORD")
+                .put("http-server.authentication.allow-forwarded-https", "true")
                 .build();
 
         SecurityConfig expected = new SecurityConfig()
+                .setEnableForwardingHttps(true)
                 .setAuthenticationTypes(ImmutableList.of(KERBEROS, PASSWORD));
 
-        ConfigAssertions.assertFullMapping(properties, expected);
+        assertFullMapping(properties, expected);
     }
 }

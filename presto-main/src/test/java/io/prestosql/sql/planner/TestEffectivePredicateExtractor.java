@@ -19,17 +19,17 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import io.prestosql.Session;
 import io.prestosql.connector.CatalogName;
 import io.prestosql.metadata.AbstractMockMetadata;
 import io.prestosql.metadata.FunctionKind;
-import io.prestosql.metadata.FunctionRegistry;
 import io.prestosql.metadata.Metadata;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.TableHandle;
 import io.prestosql.metadata.TableProperties;
+import io.prestosql.operator.scalar.ScalarFunctionImplementation;
 import io.prestosql.spi.block.BlockEncodingSerde;
 import io.prestosql.spi.block.SortOrder;
 import io.prestosql.spi.connector.ColumnHandle;
@@ -38,8 +38,9 @@ import io.prestosql.spi.connector.ConnectorTableProperties;
 import io.prestosql.spi.predicate.Domain;
 import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.type.Type;
-import io.prestosql.spi.type.TypeManager;
+import io.prestosql.spi.type.TypeId;
 import io.prestosql.spi.type.TypeSignature;
+import io.prestosql.sql.analyzer.TypeSignatureProvider;
 import io.prestosql.sql.parser.SqlParser;
 import io.prestosql.sql.planner.plan.AggregationNode;
 import io.prestosql.sql.planner.plan.AggregationNode.Aggregation;
@@ -74,7 +75,6 @@ import io.prestosql.sql.tree.QualifiedName;
 import io.prestosql.testing.TestingMetadata.TestingColumnHandle;
 import io.prestosql.testing.TestingSession;
 import io.prestosql.testing.TestingTransactionHandle;
-import io.prestosql.type.UnknownType;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
@@ -90,6 +90,7 @@ import java.util.UUID;
 import java.util.stream.IntStream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.prestosql.metadata.FunctionId.toFunctionId;
 import static io.prestosql.metadata.FunctionKind.AGGREGATE;
 import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.spi.type.BigintType.BIGINT;
@@ -101,6 +102,7 @@ import static io.prestosql.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static io.prestosql.sql.tree.BooleanLiteral.FALSE_LITERAL;
 import static io.prestosql.sql.tree.BooleanLiteral.TRUE_LITERAL;
 import static io.prestosql.sql.tree.ComparisonExpression.Operator.EQUAL;
+import static io.prestosql.type.UnknownType.UNKNOWN;
 import static org.testng.Assert.assertEquals;
 
 @Test(singleThreaded = true)
@@ -133,21 +135,38 @@ public class TestEffectivePredicateExtractor
         }
 
         @Override
-        public FunctionRegistry getFunctionRegistry()
-        {
-            return delegate.getFunctionRegistry();
-        }
-
-        @Override
-        public TypeManager getTypeManager()
-        {
-            return delegate.getTypeManager();
-        }
-
-        @Override
         public Type getType(TypeSignature signature)
         {
             return delegate.getType(signature);
+        }
+
+        public Type fromSqlType(String sqlType)
+        {
+            return delegate.fromSqlType(sqlType);
+        }
+
+        @Override
+        public Type getType(TypeId id)
+        {
+            return delegate.getType(id);
+        }
+
+        @Override
+        public ResolvedFunction resolveFunction(QualifiedName name, List<TypeSignatureProvider> parameterTypes)
+        {
+            return delegate.resolveFunction(name, parameterTypes);
+        }
+
+        @Override
+        public ResolvedFunction getCoercion(Type fromType, Type toType)
+        {
+            return delegate.getCoercion(fromType, toType);
+        }
+
+        @Override
+        public ScalarFunctionImplementation getScalarFunctionImplementation(ResolvedFunction resolvedFunction)
+        {
+            return delegate.getScalarFunctionImplementation(resolvedFunction);
         }
 
         @Override
@@ -163,7 +182,8 @@ public class TestEffectivePredicateExtractor
     };
 
     private final TypeAnalyzer typeAnalyzer = new TypeAnalyzer(new SqlParser(), metadata);
-    private final EffectivePredicateExtractor effectivePredicateExtractor = new EffectivePredicateExtractor(new DomainTranslator(new LiteralEncoder(metadata.getBlockEncodingSerde())), metadata);
+    private final EffectivePredicateExtractor effectivePredicateExtractor = new EffectivePredicateExtractor(new DomainTranslator(new LiteralEncoder(metadata)), metadata, true);
+    private final EffectivePredicateExtractor effectivePredicateExtractorWithoutTableProperties = new EffectivePredicateExtractor(new DomainTranslator(new LiteralEncoder(metadata)), metadata, false);
 
     private Map<Symbol, ColumnHandle> scanAssignments;
     private TableScanNode baseTableScan;
@@ -205,11 +225,23 @@ public class TestEffectivePredicateExtractor
                                 greaterThan(AE, bigintLiteral(2)),
                                 equals(EE, FE))),
                 ImmutableMap.of(
-                        C, new Aggregation(fakeFunction(), fakeFunctionHandle("test", AGGREGATE), Optional.empty()),
-                        D, new Aggregation(fakeFunction(), fakeFunctionHandle("test", AGGREGATE), Optional.empty())),
+                        C, new Aggregation(
+                                fakeFunction("test", AGGREGATE),
+                                ImmutableList.of(),
+                                false,
+                                Optional.empty(),
+                                Optional.empty(),
+                                Optional.empty()),
+                        D, new Aggregation(
+                                fakeFunction("test", AGGREGATE),
+                                ImmutableList.of(),
+                                false,
+                                Optional.empty(),
+                                Optional.empty(),
+                                Optional.empty())),
                 singleGroupingSet(ImmutableList.of(A, B, C)),
                 ImmutableList.of(),
-                AggregationNode.Step.FINAL,
+                AggregationNode.Step.SINGLE,
                 Optional.empty(),
                 Optional.empty());
 
@@ -247,7 +279,9 @@ public class TestEffectivePredicateExtractor
     {
         PlanNode node = filter(baseTableScan,
                 and(
-                        greaterThan(AE, new FunctionCall(QualifiedName.of("rand"), ImmutableList.of())),
+                        greaterThan(AE, new FunctionCallBuilder(metadata)
+                                .setName(QualifiedName.of("rand"))
+                                .build()),
                         lessThan(BE, bigintLiteral(10))));
 
         Expression effectivePredicate = effectivePredicateExtractor.extract(SESSION, node, TypeProvider.empty(), typeAnalyzer);
@@ -408,10 +442,30 @@ public class TestEffectivePredicateExtractor
                 scanAssignments.get(B), Domain.singleValue(BIGINT, 2L)));
         node = new TableScanNode(
                 newId(),
-                makeTableHandle(predicate),
+                makeTableHandle(TupleDomain.withColumnDomains(ImmutableMap.of(scanAssignments.get(A), Domain.singleValue(BIGINT, 1L)))),
                 ImmutableList.copyOf(assignments.keySet()),
                 assignments,
                 predicate);
+        effectivePredicate = effectivePredicateExtractorWithoutTableProperties.extract(SESSION, node, TypeProvider.empty(), typeAnalyzer);
+        assertEquals(normalizeConjuncts(effectivePredicate), normalizeConjuncts(equals(bigintLiteral(2L), BE), equals(bigintLiteral(1L), AE)));
+
+        node = new TableScanNode(
+                newId(),
+                makeTableHandle(predicate),
+                ImmutableList.copyOf(assignments.keySet()),
+                assignments,
+                TupleDomain.all());
+        effectivePredicate = effectivePredicateExtractor.extract(SESSION, node, TypeProvider.empty(), typeAnalyzer);
+        assertEquals(effectivePredicate, BooleanLiteral.TRUE_LITERAL);
+
+        node = new TableScanNode(
+                newId(),
+                makeTableHandle(predicate),
+                ImmutableList.copyOf(assignments.keySet()),
+                assignments,
+                TupleDomain.withColumnDomains(ImmutableMap.of(
+                        scanAssignments.get(A), Domain.multipleValues(BIGINT, ImmutableList.of(1L, 2L, 3L)),
+                        scanAssignments.get(B), Domain.multipleValues(BIGINT, ImmutableList.of(1L, 2L, 3L)))));
         effectivePredicate = effectivePredicateExtractor.extract(SESSION, node, TypeProvider.empty(), typeAnalyzer);
         assertEquals(normalizeConjuncts(effectivePredicate), normalizeConjuncts(equals(bigintLiteral(2L), BE), equals(bigintLiteral(1L), AE)));
 
@@ -937,14 +991,10 @@ public class TestEffectivePredicateExtractor
         return new IsNullPredicate(expression);
     }
 
-    private static FunctionCall fakeFunction()
+    private static ResolvedFunction fakeFunction(String name, FunctionKind kind)
     {
-        return new FunctionCall(QualifiedName.of("test"), ImmutableList.of());
-    }
-
-    private static Signature fakeFunctionHandle(String name, FunctionKind kind)
-    {
-        return new Signature(name, kind, TypeSignature.parseTypeSignature(UnknownType.NAME), ImmutableList.of());
+        Signature boundSignature = new Signature(name, kind, UNKNOWN.getTypeSignature(), ImmutableList.of());
+        return new ResolvedFunction(boundSignature, toFunctionId(boundSignature));
     }
 
     private Set<Expression> normalizeConjuncts(Expression... conjuncts)
@@ -964,15 +1014,16 @@ public class TestEffectivePredicateExtractor
         predicate = expressionNormalizer.normalize(predicate);
 
         // Equality inference rewrites and equality generation will always be stable across multiple runs in the same JVM
-        EqualityInference inference = EqualityInference.createEqualityInference(predicate);
+        EqualityInference inference = EqualityInference.newInstance(predicate);
 
+        Set<Symbol> scope = SymbolsExtractor.extractUnique(predicate);
         Set<Expression> rewrittenSet = new HashSet<>();
         for (Expression expression : EqualityInference.nonInferrableConjuncts(predicate)) {
-            Expression rewritten = inference.rewriteExpression(expression, Predicates.alwaysTrue());
+            Expression rewritten = inference.rewrite(expression, scope);
             Preconditions.checkState(rewritten != null, "Rewrite with full symbol scope should always be possible");
             rewrittenSet.add(rewritten);
         }
-        rewrittenSet.addAll(inference.generateEqualitiesPartitionedBy(Predicates.alwaysTrue()).getScopeEqualities());
+        rewrittenSet.addAll(inference.generateEqualitiesPartitionedBy(scope).getScopeEqualities());
 
         return rewrittenSet;
     }
@@ -1001,9 +1052,9 @@ public class TestEffectivePredicateExtractor
             Expression identityNormalizedExpression = expressionCache.get(expression);
             if (identityNormalizedExpression == null) {
                 // Make sure all sub-expressions are normalized first
-                for (Expression subExpression : Iterables.filter(SubExpressionExtractor.extract(expression), Predicates.not(Predicates.equalTo(expression)))) {
-                    normalize(subExpression);
-                }
+                SubExpressionExtractor.extract(expression).stream()
+                        .filter(e -> !e.equals(expression))
+                        .forEach(this::normalize);
 
                 // Since we have not seen this expression before, rewrite it entirely in terms of the normalized sub-expressions
                 identityNormalizedExpression = ExpressionTreeRewriter.rewriteWith(new ExpressionNodeInliner(expressionCache), expression);

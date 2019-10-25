@@ -165,9 +165,9 @@ public class TestField
     @Test
     public void testMap()
     {
-        Type type = createTestMetadataManager().getTypeManager().getParameterizedType(StandardTypes.MAP, ImmutableList.of(
-                TypeSignatureParameter.of(VARCHAR.getTypeSignature()),
-                TypeSignatureParameter.of(BIGINT.getTypeSignature())));
+        Type type = createTestMetadataManager().getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                TypeSignatureParameter.typeParameter(VARCHAR.getTypeSignature()),
+                TypeSignatureParameter.typeParameter(BIGINT.getTypeSignature())));
         Block expected = AccumuloRowSerializer.getBlockFromMap(type, ImmutableMap.of("a", 1L, "b", 2L, "c", 3L));
         Field f1 = new Field(expected, type);
         assertEquals(f1.getMap(), expected);

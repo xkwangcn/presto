@@ -27,7 +27,7 @@ import static io.prestosql.testing.assertions.Assert.assertEquals;
 import static io.prestosql.tests.QueryAssertions.assertEqualsIgnoreOrder;
 import static io.prestosql.tests.StructuralTestUtil.mapType;
 
-public class AbstractTestWindowQueries
+public abstract class AbstractTestWindowQueries
         extends AbstractTestQueryFramework
 {
     public AbstractTestWindowQueries(QueryRunnerSupplier supplier)
@@ -597,5 +597,49 @@ public class AbstractTestWindowQueries
                 .build();
 
         assertEqualsIgnoreOrder(actual, expected);
+    }
+
+    @Test
+    public void testMultipleInstancesOfWindowFunction()
+    {
+        assertQueryOrdered(
+                "SELECT a, b, c, " +
+                        "lag(c, 1) RESPECT NULLS OVER (PARTITION BY b ORDER BY a), " +
+                        "lag(c, 1) IGNORE NULLS OVER (PARTITION BY b ORDER BY a) " +
+                        "FROM ( VALUES " +
+                            "(1, 'A', 'a'), " +
+                            "(2, 'A', NULL), " +
+                            "(3, 'A', 'c'), " +
+                            "(4, 'A', NULL), " +
+                            "(5, 'A', 'e'), " +
+                            "(6, 'A', NULL)" +
+                            ") t(a, b, c)",
+                "VALUES " +
+                            "(1, 'A', 'a', null, null), " +
+                            "(2, 'A', null, 'a', 'a'), " +
+                            "(3, 'A', 'c', null, 'a'), " +
+                            "(4, 'A', null, 'c', 'c'), " +
+                            "(5, 'A', 'e', null, 'c'), " +
+                            "(6, 'A', null, 'e', 'e')");
+
+        assertQueryOrdered(
+                "SELECT a, b, c, " +
+                        "lag(c, 1) IGNORE NULLS OVER (PARTITION BY b ORDER BY a), " +
+                        "lag(c, 1) RESPECT NULLS OVER (PARTITION BY b ORDER BY a) " +
+                        "FROM ( VALUES " +
+                        "(1, 'A', 'a'), " +
+                        "(2, 'A', NULL), " +
+                        "(3, 'A', 'c'), " +
+                        "(4, 'A', NULL), " +
+                        "(5, 'A', 'e'), " +
+                        "(6, 'A', NULL)" +
+                        ") t(a, b, c)",
+                "VALUES " +
+                        "(1, 'A', 'a', null, null), " +
+                        "(2, 'A', null, 'a', 'a'), " +
+                        "(3, 'A', 'c', 'a', null), " +
+                        "(4, 'A', null, 'c', 'c'), " +
+                        "(5, 'A', 'e', 'c', null), " +
+                        "(6, 'A', null, 'e', 'e')");
     }
 }

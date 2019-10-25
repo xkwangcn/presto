@@ -30,6 +30,16 @@ public interface TypeManager
     Type getType(TypeSignature signature);
 
     /**
+     * Gets a type given it's SQL representation
+     */
+    Type fromSqlType(String type);
+
+    /**
+     * Gets the type with the give (opaque) id
+     */
+    Type getType(TypeId id);
+
+    /**
      * Gets the type with the specified base type and the given parameters.
      *
      * @throws TypeNotFoundException if not found
@@ -55,4 +65,6 @@ public interface TypeManager
     Optional<Type> coerceTypeBase(Type sourceType, String resultTypeBase);
 
     MethodHandle resolveOperator(OperatorType operatorType, List<? extends Type> argumentTypes);
+
+    MethodHandle getCoercion(Type fromType, Type toType);
 }

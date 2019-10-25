@@ -23,7 +23,6 @@ import io.prestosql.plugin.tpch.util.PredicateUtils;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.connector.ConnectorTableHandle;
-import io.prestosql.spi.connector.ConnectorTableLayoutResult;
 import io.prestosql.spi.connector.Constraint;
 import io.prestosql.spi.connector.ConstraintApplicationResult;
 import io.prestosql.spi.connector.SchemaTableName;
@@ -42,7 +41,6 @@ import java.util.Optional;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
-import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.airlift.tpch.CustomerColumn.MARKET_SEGMENT;
 import static io.airlift.tpch.CustomerColumn.NAME;
@@ -71,6 +69,7 @@ import static java.util.Arrays.stream;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 
@@ -127,6 +126,17 @@ public class TestTpchMetadata
             testTableStats(schema, ORDERS, constraint(ORDER_STATUS, "F", "NO SUCH STATUS"), 730_400 * scaleFactor);
             testTableStats(schema, ORDERS, constraint(ORDER_STATUS, "F", "O", "P"), 1_500_000 * scaleFactor);
         });
+    }
+
+    @Test
+    public void testHiddenSchemas()
+    {
+        assertTrue(tpchMetadata.schemaExists(session, "sf1"));
+        assertTrue(tpchMetadata.schemaExists(session, "sf3000.0"));
+        assertFalse(tpchMetadata.schemaExists(session, "sf0"));
+        assertFalse(tpchMetadata.schemaExists(session, "hf1"));
+        assertFalse(tpchMetadata.schemaExists(session, "sf"));
+        assertFalse(tpchMetadata.schemaExists(session, "sfabc"));
     }
 
     private void testTableStats(String schema, TpchTable<?> table, double expectedRowCount)
@@ -370,12 +380,6 @@ public class TestTpchMetadata
                 ImmutableMap.of(
                         tpchMetadata.toColumnHandle(column1), new NullableValue(getPrestoType(column1), value1),
                         tpchMetadata.toColumnHandle(column2), new NullableValue(getPrestoType(column2), value2)));
-    }
-
-    private static ConnectorTableLayoutResult getTableOnlyLayout(TpchMetadata tpchMetadata, ConnectorSession session, ConnectorTableHandle tableHandle, Constraint constraint)
-    {
-        List<ConnectorTableLayoutResult> tableLayouts = tpchMetadata.getTableLayouts(session, tableHandle, constraint, Optional.empty());
-        return getOnlyElement(tableLayouts);
     }
 
     private ColumnStatistics noColumnStatistics()

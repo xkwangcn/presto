@@ -19,6 +19,7 @@ import io.airlift.units.Duration;
 import io.prestosql.execution.QueryManagerConfig;
 import io.prestosql.execution.TaskManagerConfig;
 import io.prestosql.memory.MemoryManagerConfig;
+import io.prestosql.memory.NodeMemoryConfig;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.session.PropertyMetadata;
 import io.prestosql.sql.analyzer.FeaturesConfig;
@@ -116,14 +117,19 @@ public final class SystemSessionProperties
     public static final String DEFAULT_FILTER_FACTOR_ENABLED = "default_filter_factor_enabled";
     public static final String UNWRAP_CASTS = "unwrap_casts";
     public static final String SKIP_REDUNDANT_SORT = "skip_redundant_sort";
+    public static final String PREDICATE_PUSHDOWN_USE_TABLE_PROPERTIES = "predicate_pushdown_use_table_properties";
     public static final String WORK_PROCESSOR_PIPELINES = "work_processor_pipelines";
     public static final String ENABLE_DYNAMIC_FILTERING = "enable_dynamic_filtering";
+    public static final String QUERY_MAX_MEMORY_PER_NODE = "query_max_memory_per_node";
+    public static final String QUERY_MAX_TOTAL_MEMORY_PER_NODE = "query_max_total_memory_per_node";
+    public static final String DYNAMIC_FILTERING_MAX_PER_DRIVER_ROW_COUNT = "dynamic_filtering_max_per_driver_row_count";
+    public static final String DYNAMIC_FILTERING_MAX_PER_DRIVER_SIZE = "dynamic_filtering_max_per_driver_size";
 
     private final List<PropertyMetadata<?>> sessionProperties;
 
     public SystemSessionProperties()
     {
-        this(new QueryManagerConfig(), new TaskManagerConfig(), new MemoryManagerConfig(), new FeaturesConfig());
+        this(new QueryManagerConfig(), new TaskManagerConfig(), new MemoryManagerConfig(), new FeaturesConfig(), new NodeMemoryConfig());
     }
 
     @Inject
@@ -131,7 +137,8 @@ public final class SystemSessionProperties
             QueryManagerConfig queryManagerConfig,
             TaskManagerConfig taskManagerConfig,
             MemoryManagerConfig memoryManagerConfig,
-            FeaturesConfig featuresConfig)
+            FeaturesConfig featuresConfig,
+            NodeMemoryConfig nodeMemoryConfig)
     {
         sessionProperties = ImmutableList.of(
                 stringProperty(
@@ -501,14 +508,39 @@ public final class SystemSessionProperties
                         featuresConfig.isSkipRedundantSort(),
                         false),
                 booleanProperty(
+                        PREDICATE_PUSHDOWN_USE_TABLE_PROPERTIES,
+                        "Use table properties in predicate pushdown",
+                        featuresConfig.isPredicatePushdownUseTableProperties(),
+                        false),
+                booleanProperty(
                         WORK_PROCESSOR_PIPELINES,
                         "Experimental: Use WorkProcessor pipelines",
                         featuresConfig.isWorkProcessorPipelines(),
                         false),
                 booleanProperty(
                         ENABLE_DYNAMIC_FILTERING,
-                        "Enable dynamic filtering",
+                        "Experimental: Enable dynamic filtering",
                         featuresConfig.isEnableDynamicFiltering(),
+                        false),
+                dataSizeProperty(
+                        QUERY_MAX_MEMORY_PER_NODE,
+                        "Maximum amount of memory a query can use per node",
+                        nodeMemoryConfig.getMaxQueryMemoryPerNode(),
+                        true),
+                dataSizeProperty(
+                        QUERY_MAX_TOTAL_MEMORY_PER_NODE,
+                        "Maximum amount of total memory a query can use per node",
+                        nodeMemoryConfig.getMaxQueryTotalMemoryPerNode(),
+                        true),
+                integerProperty(
+                        DYNAMIC_FILTERING_MAX_PER_DRIVER_ROW_COUNT,
+                        "Experimental: maximum number of build-side rows to be collected for dynamic filtering per-driver",
+                        featuresConfig.getDynamicFilteringMaxPerDriverRowCount(),
+                        false),
+                dataSizeProperty(
+                        DYNAMIC_FILTERING_MAX_PER_DRIVER_SIZE,
+                        "Experimental: maximum number of bytes to be collected for dynamic filtering per-driver",
+                        featuresConfig.getDynamicFilteringMaxPerDriverSize(),
                         false));
     }
 
@@ -552,7 +584,7 @@ public final class SystemSessionProperties
         return session.getSystemProperty(GROUPED_EXECUTION, Boolean.class);
     }
 
-    public static boolean isDynamicSchduleForGroupedExecution(Session session)
+    public static boolean isDynamicScheduleForGroupedExecution(Session session)
     {
         return session.getSystemProperty(DYNAMIC_SCHEDULE_FOR_GROUPED_EXECUTION, Boolean.class);
     }
@@ -685,10 +717,8 @@ public final class SystemSessionProperties
         if (result == 0) {
             return OptionalInt.empty();
         }
-        else {
-            checkArgument(result > 0, "Concurrent lifespans per node must be positive if set to non-zero");
-            return OptionalInt.of(result);
-        }
+        checkArgument(result > 0, "Concurrent lifespans per node is negative: %s", result);
+        return OptionalInt.of(result);
     }
 
     public static int getInitialSplitsPerNode(Session session)
@@ -897,6 +927,11 @@ public final class SystemSessionProperties
         return session.getSystemProperty(SKIP_REDUNDANT_SORT, Boolean.class);
     }
 
+    public static boolean isPredicatePushdownUseTableProperties(Session session)
+    {
+        return session.getSystemProperty(PREDICATE_PUSHDOWN_USE_TABLE_PROPERTIES, Boolean.class);
+    }
+
     public static boolean isWorkProcessorPipelines(Session session)
     {
         return session.getSystemProperty(WORK_PROCESSOR_PIPELINES, Boolean.class);
@@ -905,5 +940,25 @@ public final class SystemSessionProperties
     public static boolean isEnableDynamicFiltering(Session session)
     {
         return session.getSystemProperty(ENABLE_DYNAMIC_FILTERING, Boolean.class);
+    }
+
+    public static DataSize getQueryMaxMemoryPerNode(Session session)
+    {
+        return session.getSystemProperty(QUERY_MAX_MEMORY_PER_NODE, DataSize.class);
+    }
+
+    public static DataSize getQueryMaxTotalMemoryPerNode(Session session)
+    {
+        return session.getSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, DataSize.class);
+    }
+
+    public static int getDynamicFilteringMaxPerDriverRowCount(Session session)
+    {
+        return session.getSystemProperty(DYNAMIC_FILTERING_MAX_PER_DRIVER_ROW_COUNT, Integer.class);
+    }
+
+    public static DataSize getDynamicFilteringMaxPerDriverSize(Session session)
+    {
+        return session.getSystemProperty(DYNAMIC_FILTERING_MAX_PER_DRIVER_SIZE, DataSize.class);
     }
 }

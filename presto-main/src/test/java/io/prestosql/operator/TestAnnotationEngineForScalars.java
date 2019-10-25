@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
 import io.prestosql.metadata.BoundVariables;
 import io.prestosql.metadata.FunctionKind;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.SqlScalarFunction;
 import io.prestosql.operator.annotations.ImplementationDependency;
@@ -38,14 +39,16 @@ import io.prestosql.spi.function.SqlType;
 import io.prestosql.spi.function.TypeParameter;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
-import io.prestosql.type.TypeRegistry;
+import io.prestosql.spi.type.TypeSignature;
 import org.testng.annotations.Test;
 
 import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.metadata.Signature.typeVariable;
+import static io.prestosql.operator.TypeSignatureParser.parseTypeSignature;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.USE_BOXED_TYPE;
@@ -53,7 +56,8 @@ import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConv
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
 import static io.prestosql.spi.type.DoubleType.DOUBLE;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.TypeSignature.arrayType;
+import static io.prestosql.spi.type.VarcharType.createVarcharType;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
@@ -61,9 +65,11 @@ import static org.testng.Assert.assertTrue;
 public class TestAnnotationEngineForScalars
         extends TestAnnotationEngine
 {
+    private static final Metadata METADATA = createTestMetadataManager();
+
     @ScalarFunction("single_implementation_parametric_scalar")
     @Description("Simple scalar with single implementation based on class")
-    public static class SingleImplementationScalarFunction
+    public static final class SingleImplementationScalarFunction
     {
         @SqlType(StandardTypes.DOUBLE)
         public static double fun(@SqlType(StandardTypes.DOUBLE) double v)
@@ -92,7 +98,7 @@ public class TestAnnotationEngineForScalars
 
         assertImplementationCount(scalar, 1, 0, 0);
 
-        ScalarFunctionImplementation specialized = scalar.specialize(BoundVariables.builder().build(), 1, new TypeRegistry(), null);
+        ScalarFunctionImplementation specialized = scalar.specialize(BoundVariables.builder().build(), 1, METADATA);
         assertFalse(specialized.getInstanceFactory().isPresent());
 
         assertEquals(specialized.getArgumentProperty(0).getNullConvention(), RETURN_NULL_ON_NULL);
@@ -100,7 +106,7 @@ public class TestAnnotationEngineForScalars
 
     @ScalarFunction(value = "hidden_scalar_function", hidden = true)
     @Description("Simple scalar with hidden property set")
-    public static class HiddenScalarFunction
+    public static final class HiddenScalarFunction
     {
         @SqlType(StandardTypes.DOUBLE)
         public static double fun(@SqlType(StandardTypes.DOUBLE) double v)
@@ -122,7 +128,7 @@ public class TestAnnotationEngineForScalars
 
     @ScalarFunction(value = "non_deterministic_scalar_function", deterministic = false)
     @Description("Simple scalar with deterministic property reset")
-    public static class NonDeterministicScalarFunction
+    public static final class NonDeterministicScalarFunction
     {
         @SqlType(StandardTypes.DOUBLE)
         public static double fun(@SqlType(StandardTypes.DOUBLE) double v)
@@ -144,7 +150,7 @@ public class TestAnnotationEngineForScalars
 
     @ScalarFunction("scalar_with_nullable")
     @Description("Simple scalar with nullable primitive")
-    public static class WithNullablePrimitiveArgScalarFunction
+    public static final class WithNullablePrimitiveArgScalarFunction
     {
         @SqlType(StandardTypes.DOUBLE)
         public static double fun(
@@ -174,7 +180,7 @@ public class TestAnnotationEngineForScalars
         assertFalse(scalar.isHidden());
         assertEquals(scalar.getDescription(), "Simple scalar with nullable primitive");
 
-        ScalarFunctionImplementation specialized = scalar.specialize(BoundVariables.builder().build(), 2, new TypeRegistry(), null);
+        ScalarFunctionImplementation specialized = scalar.specialize(BoundVariables.builder().build(), 2, METADATA);
         assertFalse(specialized.getInstanceFactory().isPresent());
 
         assertEquals(specialized.getArgumentProperty(0), valueTypeArgumentProperty(RETURN_NULL_ON_NULL));
@@ -183,7 +189,7 @@ public class TestAnnotationEngineForScalars
 
     @ScalarFunction("scalar_with_nullable_complex")
     @Description("Simple scalar with nullable complex type")
-    public static class WithNullableComplexArgScalarFunction
+    public static final class WithNullableComplexArgScalarFunction
     {
         @SqlType(StandardTypes.DOUBLE)
         public static double fun(
@@ -212,14 +218,14 @@ public class TestAnnotationEngineForScalars
         assertFalse(scalar.isHidden());
         assertEquals(scalar.getDescription(), "Simple scalar with nullable complex type");
 
-        ScalarFunctionImplementation specialized = scalar.specialize(BoundVariables.builder().build(), 2, new TypeRegistry(), null);
+        ScalarFunctionImplementation specialized = scalar.specialize(BoundVariables.builder().build(), 2, METADATA);
         assertFalse(specialized.getInstanceFactory().isPresent());
 
         assertEquals(specialized.getArgumentProperty(0), valueTypeArgumentProperty(RETURN_NULL_ON_NULL));
         assertEquals(specialized.getArgumentProperty(1), valueTypeArgumentProperty(USE_BOXED_TYPE));
     }
 
-    public static class StaticMethodScalarFunction
+    public static final class StaticMethodScalarFunction
     {
         @ScalarFunction("static_method_scalar")
         @Description("Simple scalar with single implementation based on method")
@@ -249,7 +255,7 @@ public class TestAnnotationEngineForScalars
         assertEquals(scalar.getDescription(), "Simple scalar with single implementation based on method");
     }
 
-    public static class MultiScalarFunction
+    public static final class MultiScalarFunction
     {
         @ScalarFunction("static_method_scalar_1")
         @Description("Simple scalar with single implementation based on method 1")
@@ -304,7 +310,7 @@ public class TestAnnotationEngineForScalars
 
     @ScalarFunction("parametric_scalar")
     @Description("Parametric scalar description")
-    public static class ParametricScalarFunction
+    public static final class ParametricScalarFunction
     {
         @SqlType("T")
         @TypeParameter("T")
@@ -329,8 +335,8 @@ public class TestAnnotationEngineForScalars
                 FunctionKind.SCALAR,
                 ImmutableList.of(typeVariable("T")),
                 ImmutableList.of(),
-                parseTypeSignature("T"),
-                ImmutableList.of(parseTypeSignature("T")),
+                new TypeSignature("T"),
+                ImmutableList.of(new TypeSignature("T")),
                 false);
 
         List<SqlScalarFunction> functions = ScalarFromAnnotationsParser.parseFunctionDefinition(ParametricScalarFunction.class);
@@ -346,7 +352,7 @@ public class TestAnnotationEngineForScalars
 
     @ScalarFunction("with_exact_scalar")
     @Description("Parametric scalar with exact and generic implementations")
-    public static class ComplexParametricScalarFunction
+    public static final class ComplexParametricScalarFunction
     {
         @SqlType(StandardTypes.BOOLEAN)
         @LiteralParameters("x")
@@ -380,7 +386,7 @@ public class TestAnnotationEngineForScalars
                 ImmutableList.of(),
                 ImmutableList.of(),
                 BOOLEAN.getTypeSignature(),
-                ImmutableList.of(parseTypeSignature("array(varchar(17))")),
+                ImmutableList.of(arrayType(createVarcharType(17).getTypeSignature())),
                 false);
 
         List<SqlScalarFunction> functions = ScalarFromAnnotationsParser.parseFunctionDefinition(ComplexParametricScalarFunction.class);
@@ -397,7 +403,7 @@ public class TestAnnotationEngineForScalars
 
     @ScalarFunction("parametric_scalar_inject")
     @Description("Parametric scalar with literal injected")
-    public static class SimpleInjectionScalarFunction
+    public static final class SimpleInjectionScalarFunction
     {
         @SqlType(StandardTypes.BIGINT)
         @LiteralParameters("x")
@@ -478,7 +484,7 @@ public class TestAnnotationEngineForScalars
                 ImmutableList.of(typeVariable("T")),
                 ImmutableList.of(),
                 BIGINT.getTypeSignature(),
-                ImmutableList.of(parseTypeSignature("array(T)")),
+                ImmutableList.of(arrayType(new TypeSignature("T"))),
                 false);
 
         List<SqlScalarFunction> functions = ScalarFromAnnotationsParser.parseFunctionDefinition(ConstructorInjectionScalarFunction.class);

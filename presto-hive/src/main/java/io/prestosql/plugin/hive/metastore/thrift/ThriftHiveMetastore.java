@@ -25,6 +25,9 @@ import io.prestosql.plugin.hive.PartitionNotFoundException;
 import io.prestosql.plugin.hive.PartitionStatistics;
 import io.prestosql.plugin.hive.SchemaAlreadyExistsException;
 import io.prestosql.plugin.hive.TableAlreadyExistsException;
+import io.prestosql.plugin.hive.authentication.HiveAuthenticationConfig;
+import io.prestosql.plugin.hive.authentication.HiveAuthenticationConfig.HiveMetastoreAuthenticationType;
+import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.plugin.hive.metastore.Column;
 import io.prestosql.plugin.hive.metastore.HiveColumnStatistics;
 import io.prestosql.plugin.hive.metastore.HivePrincipal;
@@ -64,6 +67,8 @@ import org.weakref.jmx.Managed;
 import javax.annotation.concurrent.ThreadSafe;
 import javax.inject.Inject;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -71,19 +76,21 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
-import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
-import java.util.stream.Collectors;
+import java.util.regex.Pattern;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Throwables.propagateIfPossible;
 import static com.google.common.base.Throwables.throwIfUnchecked;
+import static com.google.common.base.Verify.verifyNotNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.Sets.difference;
 import static io.prestosql.plugin.hive.HiveBasicStatistics.createEmptyStatistics;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_METASTORE_ERROR;
-import static io.prestosql.plugin.hive.HiveUtil.PRESTO_VIEW_FLAG;
 import static io.prestosql.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege;
 import static io.prestosql.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege.OWNERSHIP;
 import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.createMetastoreColumnStatistics;
@@ -95,12 +102,12 @@ import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.getH
 import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.parsePrivilege;
 import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.toMetastoreApiPartition;
 import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.updateStatisticsParameters;
+import static io.prestosql.plugin.hive.util.HiveUtil.PRESTO_VIEW_FLAG;
 import static io.prestosql.spi.StandardErrorCode.ALREADY_EXISTS;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.prestosql.spi.security.PrincipalType.USER;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
-import static java.util.stream.Collectors.toSet;
 import static org.apache.hadoop.hive.common.FileUtils.makePartName;
 import static org.apache.hadoop.hive.metastore.api.HiveObjectType.TABLE;
 import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.HIVE_FILTER_FIELD_PARAMS;
@@ -109,19 +116,24 @@ import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.HIVE_
 public class ThriftHiveMetastore
         implements ThriftMetastore
 {
-    private final ThriftHiveMetastoreStats stats = new ThriftHiveMetastoreStats();
+    private final ThriftMetastoreStats stats = new ThriftMetastoreStats();
     private final MetastoreLocator clientProvider;
     private final double backoffScaleFactor;
     private final Duration minBackoffDelay;
     private final Duration maxBackoffDelay;
     private final Duration maxRetryTime;
     private final int maxRetries;
+    private final boolean impersonationEnabled;
+    private final HiveMetastoreAuthenticationType authenticationType;
 
-    private volatile boolean metastoreKnownToSupportTableParamEqualsPredicate;
-    private volatile boolean metastoreKnownToSupportTableParamLikePredicate;
+    private final AtomicInteger chosenGetTableAlternative = new AtomicInteger(Integer.MAX_VALUE);
+    private final AtomicInteger chosenTableParamAlternative = new AtomicInteger(Integer.MAX_VALUE);
+
+    private static final Pattern TABLE_PARAMETER_SAFE_KEY_PATTERN = Pattern.compile("^[a-zA-Z_]+$");
+    private static final Pattern TABLE_PARAMETER_SAFE_VALUE_PATTERN = Pattern.compile("^[a-zA-Z0-9]*$");
 
     @Inject
-    public ThriftHiveMetastore(MetastoreLocator metastoreLocator, ThriftHiveMetastoreConfig thriftConfig)
+    public ThriftHiveMetastore(MetastoreLocator metastoreLocator, ThriftMetastoreConfig thriftConfig, HiveAuthenticationConfig authenticationConfig)
     {
         this.clientProvider = requireNonNull(metastoreLocator, "metastoreLocator is null");
         this.backoffScaleFactor = thriftConfig.getBackoffScaleFactor();
@@ -129,11 +141,13 @@ public class ThriftHiveMetastore
         this.maxBackoffDelay = thriftConfig.getMaxBackoffDelay();
         this.maxRetryTime = thriftConfig.getMaxRetryTime();
         this.maxRetries = thriftConfig.getMaxRetries();
+        this.impersonationEnabled = thriftConfig.isImpersonationEnabled();
+        this.authenticationType = authenticationConfig.getHiveMetastoreAuthenticationType();
     }
 
     @Managed
     @Flatten
-    public ThriftHiveMetastoreStats getStats()
+    public ThriftMetastoreStats getStats()
     {
         return stats;
     }
@@ -145,7 +159,7 @@ public class ThriftHiveMetastore
             return retry()
                     .stopOnIllegalExceptions()
                     .run("getAllDatabases", stats.getGetAllDatabases().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient()) {
                             return client.getAllDatabases();
                         }
                     }));
@@ -166,7 +180,7 @@ public class ThriftHiveMetastore
                     .stopOn(NoSuchObjectException.class)
                     .stopOnIllegalExceptions()
                     .run("getDatabase", stats.getGetDatabase().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient()) {
                             return Optional.of(client.getDatabase(databaseName));
                         }
                     }));
@@ -183,33 +197,64 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public Optional<List<String>> getAllTables(String databaseName)
+    public List<String> getAllTables(String databaseName)
     {
-        Callable<List<String>> getAllTables = stats.getGetAllTables().wrap(() -> {
-            try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
-                return client.getAllTables(databaseName);
-            }
-        });
-
-        Callable<Void> getDatabase = stats.getGetDatabase().wrap(() -> {
-            try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
-                client.getDatabase(databaseName);
-                return null;
-            }
-        });
-
         try {
             return retry()
                     .stopOn(NoSuchObjectException.class)
                     .stopOnIllegalExceptions()
                     .run("getAllTables", () -> {
-                        List<String> tables = getAllTables.call();
-                        if (tables.isEmpty()) {
-                            // Check to see if the database exists
-                            getDatabase.call();
+                        try (ThriftMetastoreClient client = createMetastoreClient()) {
+                            return client.getAllTables(databaseName);
                         }
-                        return Optional.of(tables);
                     });
+        }
+        catch (NoSuchObjectException e) {
+            return ImmutableList.of();
+        }
+        catch (TException e) {
+            throw new PrestoException(HIVE_METASTORE_ERROR, e);
+        }
+        catch (Exception e) {
+            throw propagate(e);
+        }
+    }
+
+    @Override
+    public List<String> getTablesWithParameter(String databaseName, String parameterKey, String parameterValue)
+    {
+        try {
+            return retry()
+                    .stopOn(UnknownDBException.class)
+                    .stopOnIllegalExceptions()
+                    .run("getTablesWithParameter", stats.getGetTablesWithParameter().wrap(
+                            () -> doGetTablesWithParameter(databaseName, parameterKey, parameterValue)));
+        }
+        catch (UnknownDBException e) {
+            return ImmutableList.of();
+        }
+        catch (TException e) {
+            throw new PrestoException(HIVE_METASTORE_ERROR, e);
+        }
+        catch (Exception e) {
+            throw propagate(e);
+        }
+    }
+
+    @Override
+    public Optional<Table> getTable(HiveIdentity identity, String databaseName, String tableName)
+    {
+        try {
+            return retry()
+                    .stopOn(NoSuchObjectException.class, HiveViewNotSupportedException.class)
+                    .stopOnIllegalExceptions()
+                    .run("getTable", stats.getGetTable().wrap(() -> {
+                        Table table = getTableFromMetastore(identity, databaseName, tableName);
+                        if (table.getTableType().equals(TableType.VIRTUAL_VIEW.name()) && !isPrestoView(table)) {
+                            throw new HiveViewNotSupportedException(new SchemaTableName(databaseName, tableName));
+                        }
+                        return Optional.of(table);
+                    }));
         }
         catch (NoSuchObjectException e) {
             return Optional.empty();
@@ -222,32 +267,14 @@ public class ThriftHiveMetastore
         }
     }
 
-    @Override
-    public Optional<Table> getTable(String databaseName, String tableName)
+    private Table getTableFromMetastore(HiveIdentity identity, String databaseName, String tableName)
+            throws TException
     {
-        try {
-            return retry()
-                    .stopOn(NoSuchObjectException.class, HiveViewNotSupportedException.class)
-                    .stopOnIllegalExceptions()
-                    .run("getTable", stats.getGetTable().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
-                            Table table = client.getTable(databaseName, tableName);
-                            if (table.getTableType().equals(TableType.VIRTUAL_VIEW.name()) && !isPrestoView(table)) {
-                                throw new HiveViewNotSupportedException(new SchemaTableName(databaseName, tableName));
-                            }
-                            return Optional.of(table);
-                        }
-                    }));
-        }
-        catch (NoSuchObjectException e) {
-            return Optional.empty();
-        }
-        catch (TException e) {
-            throw new PrestoException(HIVE_METASTORE_ERROR, e);
-        }
-        catch (Exception e) {
-            throw propagate(e);
-        }
+        return alternativeCall(
+                () -> createMetastoreClient(identity),
+                chosenGetTableAlternative,
+                client -> client.getTableWithCapabilities(databaseName, tableName),
+                client -> client.getTable(databaseName, tableName));
     }
 
     @Override
@@ -262,26 +289,26 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public PartitionStatistics getTableStatistics(String databaseName, String tableName)
+    public PartitionStatistics getTableStatistics(HiveIdentity identity, String databaseName, String tableName)
     {
-        Table table = getTable(databaseName, tableName)
+        Table table = getTable(identity, databaseName, tableName)
                 .orElseThrow(() -> new TableNotFoundException(new SchemaTableName(databaseName, tableName)));
         List<String> dataColumns = table.getSd().getCols().stream()
                 .map(FieldSchema::getName)
                 .collect(toImmutableList());
         HiveBasicStatistics basicStatistics = getHiveBasicStatistics(table.getParameters());
-        Map<String, HiveColumnStatistics> columnStatistics = getTableColumnStatistics(databaseName, tableName, dataColumns, basicStatistics.getRowCount());
+        Map<String, HiveColumnStatistics> columnStatistics = getTableColumnStatistics(identity, databaseName, tableName, dataColumns, basicStatistics.getRowCount());
         return new PartitionStatistics(basicStatistics, columnStatistics);
     }
 
-    private Map<String, HiveColumnStatistics> getTableColumnStatistics(String databaseName, String tableName, List<String> columns, OptionalLong rowCount)
+    private Map<String, HiveColumnStatistics> getTableColumnStatistics(HiveIdentity identity, String databaseName, String tableName, List<String> columns, OptionalLong rowCount)
     {
         try {
             return retry()
                     .stopOn(NoSuchObjectException.class, HiveViewNotSupportedException.class)
                     .stopOnIllegalExceptions()
                     .run("getTableColumnStatistics", stats.getGetTableColumnStatistics().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             return groupStatisticsByColumn(client.getTableColumnStatistics(databaseName, tableName, columns), rowCount);
                         }
                     }));
@@ -298,9 +325,9 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public Map<String, PartitionStatistics> getPartitionStatistics(String databaseName, String tableName, Set<String> partitionNames)
+    public Map<String, PartitionStatistics> getPartitionStatistics(HiveIdentity identity, String databaseName, String tableName, Set<String> partitionNames)
     {
-        Table table = getTable(databaseName, tableName)
+        Table table = getTable(identity, databaseName, tableName)
                 .orElseThrow(() -> new TableNotFoundException(new SchemaTableName(databaseName, tableName)));
         List<String> dataColumns = table.getSd().getCols().stream()
                 .map(FieldSchema::getName)
@@ -309,13 +336,14 @@ public class ThriftHiveMetastore
                 .map(FieldSchema::getName)
                 .collect(toImmutableList());
 
-        Map<String, HiveBasicStatistics> partitionBasicStatistics = getPartitionsByNames(databaseName, tableName, ImmutableList.copyOf(partitionNames)).stream()
+        Map<String, HiveBasicStatistics> partitionBasicStatistics = getPartitionsByNames(identity, databaseName, tableName, ImmutableList.copyOf(partitionNames)).stream()
                 .collect(toImmutableMap(
                         partition -> makePartName(partitionColumns, partition.getValues()),
                         partition -> getHiveBasicStatistics(partition.getParameters())));
         Map<String, OptionalLong> partitionRowCounts = partitionBasicStatistics.entrySet().stream()
                 .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().getRowCount()));
         Map<String, Map<String, HiveColumnStatistics>> partitionColumnStatistics = getPartitionColumnStatistics(
+                identity,
                 databaseName,
                 tableName,
                 partitionNames,
@@ -332,14 +360,14 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public Optional<List<FieldSchema>> getFields(String databaseName, String tableName)
+    public Optional<List<FieldSchema>> getFields(HiveIdentity identity, String databaseName, String tableName)
     {
         try {
             return retry()
                     .stopOn(MetaException.class, UnknownTableException.class, UnknownDBException.class)
                     .stopOnIllegalExceptions()
                     .run("getFields", stats.getGetFields().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient()) {
                             return Optional.of(ImmutableList.copyOf(client.getFields(databaseName, tableName)));
                         }
                     }));
@@ -356,27 +384,28 @@ public class ThriftHiveMetastore
     }
 
     private Map<String, Map<String, HiveColumnStatistics>> getPartitionColumnStatistics(
+            HiveIdentity identity,
             String databaseName,
             String tableName,
             Set<String> partitionNames,
             List<String> columnNames,
             Map<String, OptionalLong> partitionRowCounts)
     {
-        return getMetastorePartitionColumnStatistics(databaseName, tableName, partitionNames, columnNames).entrySet().stream()
+        return getMetastorePartitionColumnStatistics(identity, databaseName, tableName, partitionNames, columnNames).entrySet().stream()
                 .filter(entry -> !entry.getValue().isEmpty())
                 .collect(toImmutableMap(
                         Map.Entry::getKey,
                         entry -> groupStatisticsByColumn(entry.getValue(), partitionRowCounts.getOrDefault(entry.getKey(), OptionalLong.empty()))));
     }
 
-    private Map<String, List<ColumnStatisticsObj>> getMetastorePartitionColumnStatistics(String databaseName, String tableName, Set<String> partitionNames, List<String> columnNames)
+    private Map<String, List<ColumnStatisticsObj>> getMetastorePartitionColumnStatistics(HiveIdentity identity, String databaseName, String tableName, Set<String> partitionNames, List<String> columnNames)
     {
         try {
             return retry()
                     .stopOn(NoSuchObjectException.class, HiveViewNotSupportedException.class)
                     .stopOnIllegalExceptions()
                     .run("getPartitionColumnStatistics", stats.getGetPartitionColumnStatistics().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             return client.getPartitionColumnStatistics(databaseName, tableName, ImmutableList.copyOf(partitionNames), columnNames);
                         }
                     }));
@@ -399,17 +428,17 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public synchronized void updateTableStatistics(String databaseName, String tableName, Function<PartitionStatistics, PartitionStatistics> update)
+    public synchronized void updateTableStatistics(HiveIdentity identity, String databaseName, String tableName, Function<PartitionStatistics, PartitionStatistics> update)
     {
-        PartitionStatistics currentStatistics = getTableStatistics(databaseName, tableName);
+        PartitionStatistics currentStatistics = getTableStatistics(identity, databaseName, tableName);
         PartitionStatistics updatedStatistics = update.apply(currentStatistics);
 
-        Table originalTable = getTable(databaseName, tableName)
+        Table originalTable = getTable(identity, databaseName, tableName)
                 .orElseThrow(() -> new TableNotFoundException(new SchemaTableName(databaseName, tableName)));
         Table modifiedTable = originalTable.deepCopy();
         HiveBasicStatistics basicStatistics = updatedStatistics.getBasicStatistics();
         modifiedTable.setParameters(updateStatisticsParameters(modifiedTable.getParameters(), basicStatistics));
-        alterTable(databaseName, tableName, modifiedTable);
+        alterTable(identity, databaseName, tableName, modifiedTable);
 
         io.prestosql.plugin.hive.metastore.Table table = fromMetastoreApiTable(modifiedTable);
         OptionalLong rowCount = basicStatistics.getRowCount();
@@ -417,20 +446,20 @@ public class ThriftHiveMetastore
                 .map(entry -> createMetastoreColumnStatistics(entry.getKey(), table.getColumn(entry.getKey()).get().getType(), entry.getValue(), rowCount))
                 .collect(toImmutableList());
         if (!metastoreColumnStatistics.isEmpty()) {
-            setTableColumnStatistics(databaseName, tableName, metastoreColumnStatistics);
+            setTableColumnStatistics(identity, databaseName, tableName, metastoreColumnStatistics);
         }
         Set<String> removedColumnStatistics = difference(currentStatistics.getColumnStatistics().keySet(), updatedStatistics.getColumnStatistics().keySet());
-        removedColumnStatistics.forEach(column -> deleteTableColumnStatistics(databaseName, tableName, column));
+        removedColumnStatistics.forEach(column -> deleteTableColumnStatistics(identity, databaseName, tableName, column));
     }
 
-    private void setTableColumnStatistics(String databaseName, String tableName, List<ColumnStatisticsObj> statistics)
+    private void setTableColumnStatistics(HiveIdentity identity, String databaseName, String tableName, List<ColumnStatisticsObj> statistics)
     {
         try {
             retry()
                     .stopOn(NoSuchObjectException.class, InvalidObjectException.class, MetaException.class, InvalidInputException.class)
                     .stopOnIllegalExceptions()
                     .run("setTableColumnStatistics", stats.getCreateDatabase().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             client.setTableColumnStatistics(databaseName, tableName, statistics);
                         }
                         return null;
@@ -447,14 +476,14 @@ public class ThriftHiveMetastore
         }
     }
 
-    private void deleteTableColumnStatistics(String databaseName, String tableName, String columnName)
+    private void deleteTableColumnStatistics(HiveIdentity identity, String databaseName, String tableName, String columnName)
     {
         try {
             retry()
                     .stopOn(NoSuchObjectException.class, InvalidObjectException.class, MetaException.class, InvalidInputException.class)
                     .stopOnIllegalExceptions()
                     .run("deleteTableColumnStatistics", stats.getCreateDatabase().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             client.deleteTableColumnStatistics(databaseName, tableName, columnName);
                         }
                         return null;
@@ -472,13 +501,13 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public synchronized void updatePartitionStatistics(String databaseName, String tableName, String partitionName, Function<PartitionStatistics, PartitionStatistics> update)
+    public synchronized void updatePartitionStatistics(HiveIdentity identity, String databaseName, String tableName, String partitionName, Function<PartitionStatistics, PartitionStatistics> update)
     {
         PartitionStatistics currentStatistics = requireNonNull(
-                getPartitionStatistics(databaseName, tableName, ImmutableSet.of(partitionName)).get(partitionName), "getPartitionStatistics() returned null");
+                getPartitionStatistics(identity, databaseName, tableName, ImmutableSet.of(partitionName)).get(partitionName), "getPartitionStatistics() returned null");
         PartitionStatistics updatedStatistics = update.apply(currentStatistics);
 
-        List<Partition> partitions = getPartitionsByNames(databaseName, tableName, ImmutableList.of(partitionName));
+        List<Partition> partitions = getPartitionsByNames(identity, databaseName, tableName, ImmutableList.of(partitionName));
         if (partitions.size() != 1) {
             throw new PrestoException(HIVE_METASTORE_ERROR, "Metastore returned multiple partitions for name: " + partitionName);
         }
@@ -487,17 +516,18 @@ public class ThriftHiveMetastore
         Partition modifiedPartition = originalPartition.deepCopy();
         HiveBasicStatistics basicStatistics = updatedStatistics.getBasicStatistics();
         modifiedPartition.setParameters(updateStatisticsParameters(modifiedPartition.getParameters(), basicStatistics));
-        alterPartitionWithoutStatistics(databaseName, tableName, modifiedPartition);
+        alterPartitionWithoutStatistics(identity, databaseName, tableName, modifiedPartition);
 
         Map<String, HiveType> columns = modifiedPartition.getSd().getCols().stream()
                 .collect(toImmutableMap(FieldSchema::getName, schema -> HiveType.valueOf(schema.getType())));
-        setPartitionColumnStatistics(databaseName, tableName, partitionName, columns, updatedStatistics.getColumnStatistics(), basicStatistics.getRowCount());
+        setPartitionColumnStatistics(identity, databaseName, tableName, partitionName, columns, updatedStatistics.getColumnStatistics(), basicStatistics.getRowCount());
 
         Set<String> removedStatistics = difference(currentStatistics.getColumnStatistics().keySet(), updatedStatistics.getColumnStatistics().keySet());
-        removedStatistics.forEach(column -> deletePartitionColumnStatistics(databaseName, tableName, partitionName, column));
+        removedStatistics.forEach(column -> deletePartitionColumnStatistics(identity, databaseName, tableName, partitionName, column));
     }
 
     private void setPartitionColumnStatistics(
+            HiveIdentity identity,
             String databaseName,
             String tableName,
             String partitionName,
@@ -510,18 +540,18 @@ public class ThriftHiveMetastore
                 .map(entry -> createMetastoreColumnStatistics(entry.getKey(), columns.get(entry.getKey()), entry.getValue(), rowCount))
                 .collect(toImmutableList());
         if (!metastoreColumnStatistics.isEmpty()) {
-            setPartitionColumnStatistics(databaseName, tableName, partitionName, metastoreColumnStatistics);
+            setPartitionColumnStatistics(identity, databaseName, tableName, partitionName, metastoreColumnStatistics);
         }
     }
 
-    private void setPartitionColumnStatistics(String databaseName, String tableName, String partitionName, List<ColumnStatisticsObj> statistics)
+    private void setPartitionColumnStatistics(HiveIdentity identity, String databaseName, String tableName, String partitionName, List<ColumnStatisticsObj> statistics)
     {
         try {
             retry()
                     .stopOn(NoSuchObjectException.class, InvalidObjectException.class, MetaException.class, InvalidInputException.class)
                     .stopOnIllegalExceptions()
                     .run("setPartitionColumnStatistics", stats.getCreateDatabase().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             client.setPartitionColumnStatistics(databaseName, tableName, partitionName, statistics);
                         }
                         return null;
@@ -538,14 +568,14 @@ public class ThriftHiveMetastore
         }
     }
 
-    private void deletePartitionColumnStatistics(String databaseName, String tableName, String partitionName, String columnName)
+    private void deletePartitionColumnStatistics(HiveIdentity identity, String databaseName, String tableName, String partitionName, String columnName)
     {
         try {
             retry()
                     .stopOn(NoSuchObjectException.class, InvalidObjectException.class, MetaException.class, InvalidInputException.class)
                     .stopOnIllegalExceptions()
                     .run("deletePartitionColumnStatistics", stats.getCreateDatabase().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             client.deletePartitionColumnStatistics(databaseName, tableName, partitionName, columnName);
                         }
                         return null;
@@ -570,7 +600,7 @@ public class ThriftHiveMetastore
                     .stopOn(MetaException.class)
                     .stopOnIllegalExceptions()
                     .run("createRole", stats.getCreateRole().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient()) {
                             client.createRole(role, grantor);
                             return null;
                         }
@@ -592,7 +622,7 @@ public class ThriftHiveMetastore
                     .stopOn(MetaException.class)
                     .stopOnIllegalExceptions()
                     .run("dropRole", stats.getDropRole().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient()) {
                             client.dropRole(role);
                             return null;
                         }
@@ -614,7 +644,7 @@ public class ThriftHiveMetastore
                     .stopOn(MetaException.class)
                     .stopOnIllegalExceptions()
                     .run("listRoles", stats.getListRoles().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient()) {
                             return ImmutableSet.copyOf(client.getRoleNames());
                         }
                     }));
@@ -648,7 +678,7 @@ public class ThriftHiveMetastore
                     .stopOn(MetaException.class)
                     .stopOnIllegalExceptions()
                     .run("grantRole", stats.getGrantRole().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient()) {
                             client.grantRole(role, granteeName, granteeType, grantorName, grantorType, grantOption);
                             return null;
                         }
@@ -682,7 +712,7 @@ public class ThriftHiveMetastore
                     .stopOn(MetaException.class)
                     .stopOnIllegalExceptions()
                     .run("revokeRole", stats.getRevokeRole().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient()) {
                             client.revokeRole(role, granteeName, granteeType, grantOption);
                             return null;
                         }
@@ -704,7 +734,7 @@ public class ThriftHiveMetastore
                     .stopOn(MetaException.class)
                     .stopOnIllegalExceptions()
                     .run("listRoleGrants", stats.getListRoleGrants().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient()) {
                             return fromRolePrincipalGrants(client.listRoleGrants(principal.getName(), fromPrestoPrincipalType(principal.getType())));
                         }
                     }));
@@ -718,18 +748,17 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public Optional<List<String>> getAllViews(String databaseName)
+    public List<String> getAllViews(String databaseName)
     {
         try {
             return retry()
                     .stopOn(UnknownDBException.class)
                     .stopOnIllegalExceptions()
-                    .run("getAllViews", stats.getGetAllViews().wrap(() -> {
-                        return Optional.of(getPrestoViews(databaseName));
-                    }));
+                    .run("getAllViews", stats.getGetAllViews().wrap(
+                            () -> doGetTablesWithParameter(databaseName, PRESTO_VIEW_FLAG, "true")));
         }
         catch (UnknownDBException e) {
-            return Optional.empty();
+            return ImmutableList.of();
         }
         catch (TException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
@@ -739,57 +768,42 @@ public class ThriftHiveMetastore
         }
     }
 
-    private List<String> getPrestoViews(String databaseName)
+    private List<String> doGetTablesWithParameter(String databaseName, String parameterKey, String parameterValue)
             throws TException
     {
+        checkArgument(TABLE_PARAMETER_SAFE_KEY_PATTERN.matcher(parameterKey).matches(), "Parameter key contains invalid characters: '%s'", parameterKey);
+        /*
+         * The parameter value is restricted to have only alphanumeric characters so that it's safe
+         * to be used against HMS. When using with a LIKE operator, the HMS may want the parameter
+         * value to follow a Java regex pattern or a SQL pattern. And it's hard to predict the
+         * HMS's behavior from outside. Also, by restricting parameter values, we avoid the problem
+         * of how to quote them when passing within the filter string.
+         */
+        checkArgument(TABLE_PARAMETER_SAFE_VALUE_PATTERN.matcher(parameterValue).matches(), "Parameter value contains invalid characters: '%s'", parameterValue);
         /*
          * Thrift call `get_table_names_by_filter` may be translated by Metastore to a SQL query against Metastore database.
          * Hive 2.3 on some databases uses CLOB for table parameter value column and some databases disallow `=` predicate over
          * CLOB values. At the same time, they allow `LIKE` predicates over them.
          */
-        String filterWithEquals = HIVE_FILTER_FIELD_PARAMS + PRESTO_VIEW_FLAG + " = \"true\"";
-        String filterWithLike = HIVE_FILTER_FIELD_PARAMS + PRESTO_VIEW_FLAG + " LIKE \"true\"";
+        String filterWithEquals = HIVE_FILTER_FIELD_PARAMS + parameterKey + " = \"" + parameterValue + "\"";
+        String filterWithLike = HIVE_FILTER_FIELD_PARAMS + parameterKey + " LIKE \"" + parameterValue + "\"";
 
-        if (metastoreKnownToSupportTableParamEqualsPredicate) {
-            try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
-                return client.getTableNamesByFilter(databaseName, filterWithEquals);
-            }
-        }
-        if (metastoreKnownToSupportTableParamLikePredicate) {
-            try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
-                return client.getTableNamesByFilter(databaseName, filterWithLike);
-            }
-        }
-
-        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
-            List<String> views = client.getTableNamesByFilter(databaseName, filterWithEquals);
-            metastoreKnownToSupportTableParamEqualsPredicate = true;
-            return views;
-        }
-        catch (TException | RuntimeException firstException) {
-            try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
-                List<String> views = client.getTableNamesByFilter(databaseName, filterWithLike);
-                metastoreKnownToSupportTableParamLikePredicate = true;
-                return views;
-            }
-            catch (TException | RuntimeException secondException) {
-                if (firstException != secondException) {
-                    firstException.addSuppressed(secondException);
-                }
-            }
-            throw firstException;
-        }
+        return alternativeCall(
+                this::createMetastoreClient,
+                chosenTableParamAlternative,
+                client -> client.getTableNamesByFilter(databaseName, filterWithEquals),
+                client -> client.getTableNamesByFilter(databaseName, filterWithLike));
     }
 
     @Override
-    public void createDatabase(Database database)
+    public void createDatabase(HiveIdentity identity, Database database)
     {
         try {
             retry()
                     .stopOn(AlreadyExistsException.class, InvalidObjectException.class, MetaException.class)
                     .stopOnIllegalExceptions()
                     .run("createDatabase", stats.getCreateDatabase().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             client.createDatabase(database);
                         }
                         return null;
@@ -807,14 +821,14 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public void dropDatabase(String databaseName)
+    public void dropDatabase(HiveIdentity identity, String databaseName)
     {
         try {
             retry()
                     .stopOn(NoSuchObjectException.class, InvalidOperationException.class)
                     .stopOnIllegalExceptions()
                     .run("dropDatabase", stats.getDropDatabase().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             client.dropDatabase(databaseName, false, false);
                         }
                         return null;
@@ -832,14 +846,14 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public void alterDatabase(String databaseName, Database database)
+    public void alterDatabase(HiveIdentity identity, String databaseName, Database database)
     {
         try {
             retry()
                     .stopOn(NoSuchObjectException.class, MetaException.class)
                     .stopOnIllegalExceptions()
                     .run("alterDatabase", stats.getAlterDatabase().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             client.alterDatabase(databaseName, database);
                         }
                         return null;
@@ -857,14 +871,14 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public void createTable(Table table)
+    public void createTable(HiveIdentity identity, Table table)
     {
         try {
             retry()
                     .stopOn(AlreadyExistsException.class, InvalidObjectException.class, MetaException.class, NoSuchObjectException.class)
                     .stopOnIllegalExceptions()
                     .run("createTable", stats.getCreateTable().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             client.createTable(table);
                         }
                         return null;
@@ -885,14 +899,14 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public void dropTable(String databaseName, String tableName, boolean deleteData)
+    public void dropTable(HiveIdentity identity, String databaseName, String tableName, boolean deleteData)
     {
         try {
             retry()
                     .stopOn(NoSuchObjectException.class)
                     .stopOnIllegalExceptions()
                     .run("dropTable", stats.getDropTable().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             client.dropTable(databaseName, tableName, deleteData);
                         }
                         return null;
@@ -910,15 +924,15 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public void alterTable(String databaseName, String tableName, Table table)
+    public void alterTable(HiveIdentity identity, String databaseName, String tableName, Table table)
     {
         try {
             retry()
                     .stopOn(InvalidOperationException.class, MetaException.class)
                     .stopOnIllegalExceptions()
                     .run("alterTable", stats.getAlterTable().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
-                            Optional<Table> source = getTable(databaseName, tableName);
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
+                            Optional<Table> source = getTable(identity, databaseName, tableName);
                             if (!source.isPresent()) {
                                 throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
                             }
@@ -939,14 +953,14 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public Optional<List<String>> getPartitionNames(String databaseName, String tableName)
+    public Optional<List<String>> getPartitionNames(HiveIdentity identity, String databaseName, String tableName)
     {
         try {
             return retry()
                     .stopOn(NoSuchObjectException.class)
                     .stopOnIllegalExceptions()
                     .run("getPartitionNames", stats.getGetPartitionNames().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             return Optional.of(client.getPartitionNames(databaseName, tableName));
                         }
                     }));
@@ -963,14 +977,14 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public Optional<List<String>> getPartitionNamesByParts(String databaseName, String tableName, List<String> parts)
+    public Optional<List<String>> getPartitionNamesByParts(HiveIdentity identity, String databaseName, String tableName, List<String> parts)
     {
         try {
             return retry()
                     .stopOn(NoSuchObjectException.class)
                     .stopOnIllegalExceptions()
                     .run("getPartitionNamesByParts", stats.getGetPartitionNamesPs().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             return Optional.of(client.getPartitionNamesFiltered(databaseName, tableName, parts));
                         }
                     }));
@@ -987,18 +1001,18 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public void addPartitions(String databaseName, String tableName, List<PartitionWithStatistics> partitionsWithStatistics)
+    public void addPartitions(HiveIdentity identity, String databaseName, String tableName, List<PartitionWithStatistics> partitionsWithStatistics)
     {
         List<Partition> partitions = partitionsWithStatistics.stream()
                 .map(ThriftMetastoreUtil::toMetastoreApiPartition)
                 .collect(toImmutableList());
-        addPartitionsWithoutStatistics(databaseName, tableName, partitions);
+        addPartitionsWithoutStatistics(identity, databaseName, tableName, partitions);
         for (PartitionWithStatistics partitionWithStatistics : partitionsWithStatistics) {
-            storePartitionColumnStatistics(databaseName, tableName, partitionWithStatistics.getPartitionName(), partitionWithStatistics);
+            storePartitionColumnStatistics(identity, databaseName, tableName, partitionWithStatistics.getPartitionName(), partitionWithStatistics);
         }
     }
 
-    private void addPartitionsWithoutStatistics(String databaseName, String tableName, List<Partition> partitions)
+    private void addPartitionsWithoutStatistics(HiveIdentity identity, String databaseName, String tableName, List<Partition> partitions)
     {
         if (partitions.isEmpty()) {
             return;
@@ -1008,7 +1022,7 @@ public class ThriftHiveMetastore
                     .stopOn(AlreadyExistsException.class, InvalidObjectException.class, MetaException.class, NoSuchObjectException.class, PrestoException.class)
                     .stopOnIllegalExceptions()
                     .run("addPartitions", stats.getAddPartitions().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             int partitionsAdded = client.addPartitions(partitions);
                             if (partitionsAdded != partitions.size()) {
                                 throw new PrestoException(HIVE_METASTORE_ERROR,
@@ -1033,14 +1047,14 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public void dropPartition(String databaseName, String tableName, List<String> parts, boolean deleteData)
+    public void dropPartition(HiveIdentity identity, String databaseName, String tableName, List<String> parts, boolean deleteData)
     {
         try {
             retry()
                     .stopOn(NoSuchObjectException.class, MetaException.class)
                     .stopOnIllegalExceptions()
                     .run("dropPartition", stats.getDropPartition().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             client.dropPartition(databaseName, tableName, parts, deleteData);
                         }
                         return null;
@@ -1058,21 +1072,21 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public void alterPartition(String databaseName, String tableName, PartitionWithStatistics partitionWithStatistics)
+    public void alterPartition(HiveIdentity identity, String databaseName, String tableName, PartitionWithStatistics partitionWithStatistics)
     {
-        alterPartitionWithoutStatistics(databaseName, tableName, toMetastoreApiPartition(partitionWithStatistics));
-        storePartitionColumnStatistics(databaseName, tableName, partitionWithStatistics.getPartitionName(), partitionWithStatistics);
-        dropExtraColumnStatisticsAfterAlterPartition(databaseName, tableName, partitionWithStatistics);
+        alterPartitionWithoutStatistics(identity, databaseName, tableName, toMetastoreApiPartition(partitionWithStatistics));
+        storePartitionColumnStatistics(identity, databaseName, tableName, partitionWithStatistics.getPartitionName(), partitionWithStatistics);
+        dropExtraColumnStatisticsAfterAlterPartition(identity, databaseName, tableName, partitionWithStatistics);
     }
 
-    private void alterPartitionWithoutStatistics(String databaseName, String tableName, Partition partition)
+    private void alterPartitionWithoutStatistics(HiveIdentity identity, String databaseName, String tableName, Partition partition)
     {
         try {
             retry()
                     .stopOn(NoSuchObjectException.class, MetaException.class)
                     .stopOnIllegalExceptions()
                     .run("alterPartition", stats.getAlterPartition().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             client.alterPartition(databaseName, tableName, partition);
                         }
                         return null;
@@ -1089,7 +1103,7 @@ public class ThriftHiveMetastore
         }
     }
 
-    private void storePartitionColumnStatistics(String databaseName, String tableName, String partitionName, PartitionWithStatistics partitionWithStatistics)
+    private void storePartitionColumnStatistics(HiveIdentity identity, String databaseName, String tableName, String partitionName, PartitionWithStatistics partitionWithStatistics)
     {
         PartitionStatistics statistics = partitionWithStatistics.getStatistics();
         Map<String, HiveColumnStatistics> columnStatistics = statistics.getColumnStatistics();
@@ -1098,7 +1112,7 @@ public class ThriftHiveMetastore
         }
         Map<String, HiveType> columnTypes = partitionWithStatistics.getPartition().getColumns().stream()
                 .collect(toImmutableMap(Column::getName, Column::getType));
-        setPartitionColumnStatistics(databaseName, tableName, partitionName, columnTypes, columnStatistics, statistics.getBasicStatistics().getRowCount());
+        setPartitionColumnStatistics(identity, databaseName, tableName, partitionName, columnTypes, columnStatistics, statistics.getBasicStatistics().getRowCount());
     }
 
     /*
@@ -1110,6 +1124,7 @@ public class ThriftHiveMetastore
      * if is needed to explicitly remove the statistics from the metastore for that columns.
      */
     private void dropExtraColumnStatisticsAfterAlterPartition(
+            HiveIdentity identity,
             String databaseName,
             String tableName,
             PartitionWithStatistics partitionWithStatistics)
@@ -1131,6 +1146,7 @@ public class ThriftHiveMetastore
         // when trying to remove any missing statistics the metastore throws NoSuchObjectException
         String partitionName = partitionWithStatistics.getPartitionName();
         List<ColumnStatisticsObj> statisticsToBeRemoved = getMetastorePartitionColumnStatistics(
+                identity,
                 databaseName,
                 tableName,
                 ImmutableSet.of(partitionName),
@@ -1138,12 +1154,12 @@ public class ThriftHiveMetastore
                 .getOrDefault(partitionName, ImmutableList.of());
 
         for (ColumnStatisticsObj statistics : statisticsToBeRemoved) {
-            deletePartitionColumnStatistics(databaseName, tableName, partitionName, statistics.getColName());
+            deletePartitionColumnStatistics(identity, databaseName, tableName, partitionName, statistics.getColName());
         }
     }
 
     @Override
-    public Optional<Partition> getPartition(String databaseName, String tableName, List<String> partitionValues)
+    public Optional<Partition> getPartition(HiveIdentity identity, String databaseName, String tableName, List<String> partitionValues)
     {
         requireNonNull(partitionValues, "partitionValues is null");
         try {
@@ -1151,7 +1167,7 @@ public class ThriftHiveMetastore
                     .stopOn(NoSuchObjectException.class)
                     .stopOnIllegalExceptions()
                     .run("getPartition", stats.getGetPartition().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             return Optional.of(client.getPartition(databaseName, tableName, partitionValues));
                         }
                     }));
@@ -1168,7 +1184,7 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public List<Partition> getPartitionsByNames(String databaseName, String tableName, List<String> partitionNames)
+    public List<Partition> getPartitionsByNames(HiveIdentity identity, String databaseName, String tableName, List<String> partitionNames)
     {
         requireNonNull(partitionNames, "partitionNames is null");
         checkArgument(!Iterables.isEmpty(partitionNames), "partitionNames is empty");
@@ -1178,7 +1194,7 @@ public class ThriftHiveMetastore
                     .stopOn(NoSuchObjectException.class)
                     .stopOnIllegalExceptions()
                     .run("getPartitionsByNames", stats.getGetPartitionsByNames().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
+                        try (ThriftMetastoreClient client = createMetastoreClient(identity)) {
                             return client.getPartitionsByNames(databaseName, tableName, partitionNames);
                         }
                     }));
@@ -1196,19 +1212,19 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public void grantTablePrivileges(String databaseName, String tableName, HivePrincipal grantee, Set<HivePrivilegeInfo> privileges)
+    public void grantTablePrivileges(String databaseName, String tableName, String tableOwner, HivePrincipal grantee, Set<HivePrivilegeInfo> privileges)
     {
         Set<PrivilegeGrantInfo> requestedPrivileges = privileges.stream()
                 .map(ThriftMetastoreUtil::toMetastoreApiPrivilegeGrantInfo)
-                .collect(Collectors.toSet());
+                .collect(toImmutableSet());
         checkArgument(!containsAllPrivilege(requestedPrivileges), "\"ALL\" not supported in PrivilegeGrantInfo.privilege");
 
         try {
             retry()
                     .stopOnIllegalExceptions()
                     .run("grantTablePrivileges", stats.getGrantTablePrivileges().wrap(() -> {
-                        try (ThriftMetastoreClient metastoreClient = clientProvider.createMetastoreClient()) {
-                            Set<HivePrivilegeInfo> existingPrivileges = listTablePrivileges(databaseName, tableName, grantee);
+                        try (ThriftMetastoreClient metastoreClient = createMetastoreClient()) {
+                            Set<HivePrivilegeInfo> existingPrivileges = listTablePrivileges(databaseName, tableName, tableOwner, grantee);
 
                             Set<PrivilegeGrantInfo> privilegesToGrant = new HashSet<>(requestedPrivileges);
                             Iterator<PrivilegeGrantInfo> iterator = privilegesToGrant.iterator();
@@ -1247,25 +1263,25 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public void revokeTablePrivileges(String databaseName, String tableName, HivePrincipal grantee, Set<HivePrivilegeInfo> privileges)
+    public void revokeTablePrivileges(String databaseName, String tableName, String tableOwner, HivePrincipal grantee, Set<HivePrivilegeInfo> privileges)
     {
         Set<PrivilegeGrantInfo> requestedPrivileges = privileges.stream()
                 .map(ThriftMetastoreUtil::toMetastoreApiPrivilegeGrantInfo)
-                .collect(Collectors.toSet());
+                .collect(toImmutableSet());
         checkArgument(!containsAllPrivilege(requestedPrivileges), "\"ALL\" not supported in PrivilegeGrantInfo.privilege");
 
         try {
             retry()
                     .stopOnIllegalExceptions()
                     .run("revokeTablePrivileges", stats.getRevokeTablePrivileges().wrap(() -> {
-                        try (ThriftMetastoreClient metastoreClient = clientProvider.createMetastoreClient()) {
-                            Set<HivePrivilege> existingHivePrivileges = listTablePrivileges(databaseName, tableName, grantee).stream()
+                        try (ThriftMetastoreClient metastoreClient = createMetastoreClient()) {
+                            Set<HivePrivilege> existingHivePrivileges = listTablePrivileges(databaseName, tableName, tableOwner, grantee).stream()
                                     .map(HivePrivilegeInfo::getHivePrivilege)
-                                    .collect(toSet());
+                                    .collect(toImmutableSet());
 
                             Set<PrivilegeGrantInfo> privilegesToRevoke = requestedPrivileges.stream()
                                     .filter(privilegeGrantInfo -> existingHivePrivileges.contains(getOnlyElement(parsePrivilege(privilegeGrantInfo, Optional.empty())).getHivePrivilege()))
-                                    .collect(toSet());
+                                    .collect(toImmutableSet());
 
                             if (privilegesToRevoke.isEmpty()) {
                                 return null;
@@ -1285,14 +1301,13 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public Set<HivePrivilegeInfo> listTablePrivileges(String databaseName, String tableName, HivePrincipal principal)
+    public Set<HivePrivilegeInfo> listTablePrivileges(String databaseName, String tableName, String tableOwner, HivePrincipal principal)
     {
         try {
             return retry()
                     .stopOnIllegalExceptions()
                     .run("listTablePrivileges", stats.getListTablePrivileges().wrap(() -> {
-                        try (ThriftMetastoreClient client = clientProvider.createMetastoreClient()) {
-                            Table table = client.getTable(databaseName, tableName);
+                        try (ThriftMetastoreClient client = createMetastoreClient()) {
                             ImmutableSet.Builder<HivePrivilegeInfo> privileges = ImmutableSet.builder();
                             List<HiveObjectPrivilege> hiveObjectPrivilegeList;
                             // principal can be null when we want to list all privileges for admins
@@ -1303,7 +1318,7 @@ public class ThriftHiveMetastore
                                         new HiveObjectRef(TABLE, databaseName, tableName, null, null));
                             }
                             else {
-                                if (principal.getType() == USER && table.getOwner().equals(principal.getName())) {
+                                if (principal.getType() == USER && tableOwner.equals(principal.getName())) {
                                     privileges.add(new HivePrivilegeInfo(OWNERSHIP, true, principal, principal));
                                 }
                                 hiveObjectPrivilegeList = client.listPrivileges(
@@ -1325,6 +1340,12 @@ public class ThriftHiveMetastore
         catch (Exception e) {
             throw propagate(e);
         }
+    }
+
+    @Override
+    public boolean isImpersonationEnabled()
+    {
+        return impersonationEnabled;
     }
 
     private PrivilegeBag buildPrivilegeBag(
@@ -1351,6 +1372,116 @@ public class ThriftHiveMetastore
                 .anyMatch(privilege -> privilege.getPrivilege().equalsIgnoreCase("all"));
     }
 
+    @SafeVarargs
+    private final <T> T alternativeCall(
+            ClientSupplier clientSupplier,
+            AtomicInteger chosenAlternative,
+            Call<T>... alternatives)
+            throws TException
+    {
+        checkArgument(alternatives.length > 0, "No alternatives");
+        int chosen = chosenAlternative.get();
+        checkArgument(chosen == Integer.MAX_VALUE || (0 <= chosen && chosen < alternatives.length), "Bad chosen alternative value: %s", chosen);
+
+        if (chosen != Integer.MAX_VALUE) {
+            try (ThriftMetastoreClient client = clientSupplier.createMetastoreClient()) {
+                return alternatives[chosen].callOn(client);
+            }
+        }
+
+        Exception firstException = null;
+        for (int i = 0; i < alternatives.length; i++) {
+            int position = i;
+            try (ThriftMetastoreClient client = clientSupplier.createMetastoreClient()) {
+                T result = alternatives[i].callOn(client);
+                chosenAlternative.updateAndGet(currentChosen -> Math.min(currentChosen, position));
+                return result;
+            }
+            catch (TException | RuntimeException exception) {
+                if (isValidExceptionalResponse(exception)) {
+                    // This is likely a valid response. We are not settling on an alternative yet.
+                    // We will do it later when we get a more obviously valid response.
+                    throw exception;
+                }
+                if (firstException == null) {
+                    firstException = exception;
+                }
+                else if (firstException != exception) {
+                    firstException.addSuppressed(exception);
+                }
+            }
+        }
+
+        verifyNotNull(firstException);
+        propagateIfPossible(firstException, TException.class);
+        throw propagate(firstException);
+    }
+
+    // TODO instead of whitelisting exceptions we propagate we should recognize exceptions which we suppress and try different alternative call
+    // this requires product tests with HDP 3
+    private static boolean isValidExceptionalResponse(Exception exception)
+    {
+        if (exception instanceof NoSuchObjectException) {
+            return true;
+        }
+
+        if (exception.toString().contains("AccessControlException")) {
+            // e.g. org.apache.hadoop.hive.metastore.api.MetaException: org.apache.hadoop.security.AccessControlException: Permission denied: ...
+            return true;
+        }
+
+        return false;
+    }
+
+    private ThriftMetastoreClient createMetastoreClient()
+            throws TException
+    {
+        return clientProvider.createMetastoreClient(Optional.empty());
+    }
+
+    private ThriftMetastoreClient createMetastoreClient(HiveIdentity identity)
+            throws TException
+    {
+        if (!impersonationEnabled) {
+            return createMetastoreClient();
+        }
+
+        String username = identity.getUsername().orElseThrow(() -> new IllegalStateException("End-user name should exist when metastore impersonation is enabled"));
+        switch (authenticationType) {
+            case KERBEROS:
+                String delegationToken;
+                try (ThriftMetastoreClient client = createMetastoreClient()) {
+                    delegationToken = client.getDelegationToken(username);
+                }
+                return clientProvider.createMetastoreClient(Optional.of(delegationToken));
+
+            case NONE:
+                ThriftMetastoreClient client = createMetastoreClient();
+                setMetastoreUserOrClose(client, username);
+                return client;
+
+            default:
+                throw new IllegalStateException("Unsupported authentication type: " + authenticationType);
+        }
+    }
+
+    private static void setMetastoreUserOrClose(ThriftMetastoreClient client, String username)
+            throws TException
+    {
+        try {
+            client.setUGI(username);
+        }
+        catch (Throwable t) {
+            // close client and suppress any error from close
+            try (Closeable ignored = client) {
+                throw t;
+            }
+            catch (IOException e) {
+                // impossible; will be suppressed
+            }
+        }
+    }
+
     private RetryDriver retry()
     {
         return RetryDriver.retry()
@@ -1366,5 +1497,19 @@ public class ThriftHiveMetastore
         }
         throwIfUnchecked(throwable);
         throw new RuntimeException(throwable);
+    }
+
+    @FunctionalInterface
+    private interface ClientSupplier
+    {
+        ThriftMetastoreClient createMetastoreClient()
+                throws TException;
+    }
+
+    @FunctionalInterface
+    private interface Call<T>
+    {
+        T callOn(ThriftMetastoreClient client)
+                throws TException;
     }
 }

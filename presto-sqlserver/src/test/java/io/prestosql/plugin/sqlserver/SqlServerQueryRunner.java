@@ -16,6 +16,8 @@ package io.prestosql.plugin.sqlserver;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Streams;
+import io.airlift.log.Logger;
+import io.airlift.log.Logging;
 import io.airlift.tpch.TpchTable;
 import io.prestosql.Session;
 import io.prestosql.metadata.QualifiedObjectName;
@@ -26,7 +28,6 @@ import io.prestosql.tests.DistributedQueryRunner;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
@@ -94,7 +95,27 @@ public final class SqlServerQueryRunner
         return testSessionBuilder()
                 .setCatalog(CATALOG)
                 .setSchema(TEST_SCHEMA)
-                .setIdentity(new Identity(TestingSqlServer.USER, Optional.empty()))
+                .setIdentity(Identity.ofUser(TestingSqlServer.USER))
                 .build();
+    }
+
+    public static void main(String[] args)
+            throws Exception
+    {
+        Logging.initialize();
+
+        TestingSqlServer testingSqlServer = new TestingSqlServer();
+
+        // SqlServer is using docker container so in case that shutdown hook is not called, developer can easily clean docker container on their own
+        Runtime.getRuntime().addShutdownHook(new Thread(testingSqlServer::close));
+
+        DistributedQueryRunner queryRunner = (DistributedQueryRunner) createSqlServerQueryRunner(
+                testingSqlServer,
+                ImmutableMap.of(),
+                ImmutableList.of());
+
+        Logger log = Logger.get(DistributedQueryRunner.class);
+        log.info("======== SERVER STARTED ========");
+        log.info("\n====\n%s\n====", queryRunner.getCoordinator().getBaseUrl());
     }
 }

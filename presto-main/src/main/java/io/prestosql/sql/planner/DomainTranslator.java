@@ -18,7 +18,8 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.PeekingIterator;
 import io.prestosql.Session;
 import io.prestosql.metadata.Metadata;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.OperatorNotFoundException;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.predicate.DiscreteValues;
 import io.prestosql.spi.predicate.Domain;
@@ -49,6 +50,7 @@ import io.prestosql.sql.tree.NodeRef;
 import io.prestosql.sql.tree.NotExpression;
 import io.prestosql.sql.tree.NullLiteral;
 import io.prestosql.sql.tree.SymbolReference;
+import io.prestosql.type.TypeCoercion;
 
 import javax.annotation.Nullable;
 
@@ -62,7 +64,6 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.Iterators.peekingIterator;
-import static io.prestosql.metadata.Signature.internalOperator;
 import static io.prestosql.spi.function.OperatorType.SATURATED_FLOOR_CAST;
 import static io.prestosql.sql.ExpressionUtils.and;
 import static io.prestosql.sql.ExpressionUtils.combineConjuncts;
@@ -76,7 +77,6 @@ import static io.prestosql.sql.tree.ComparisonExpression.Operator.GREATER_THAN_O
 import static io.prestosql.sql.tree.ComparisonExpression.Operator.LESS_THAN;
 import static io.prestosql.sql.tree.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
 import static io.prestosql.sql.tree.ComparisonExpression.Operator.NOT_EQUAL;
-import static java.util.Comparator.comparing;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.collectingAndThen;
 import static java.util.stream.Collectors.toList;
@@ -98,7 +98,6 @@ public final class DomainTranslator
 
         Map<Symbol, Domain> domains = tupleDomain.getDomains().get();
         return domains.entrySet().stream()
-                .sorted(comparing(entry -> entry.getKey().getName()))
                 .map(entry -> toPredicate(entry.getValue(), entry.getKey().toSymbolReference()))
                 .collect(collectingAndThen(toImmutableList(), ExpressionUtils::combineConjuncts));
     }
@@ -286,15 +285,17 @@ public final class DomainTranslator
         private final TypeProvider types;
         private final InterpretedFunctionInvoker functionInvoker;
         private final TypeAnalyzer typeAnalyzer;
+        private final TypeCoercion typeCoercion;
 
         private Visitor(Metadata metadata, Session session, TypeProvider types, TypeAnalyzer typeAnalyzer)
         {
             this.metadata = requireNonNull(metadata, "metadata is null");
-            this.literalEncoder = new LiteralEncoder(metadata.getBlockEncodingSerde());
+            this.literalEncoder = new LiteralEncoder(metadata);
             this.session = requireNonNull(session, "session is null");
             this.types = requireNonNull(types, "types is null");
-            this.functionInvoker = new InterpretedFunctionInvoker(metadata.getFunctionRegistry());
+            this.functionInvoker = new InterpretedFunctionInvoker(metadata);
             this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
+            this.typeCoercion = new TypeCoercion(metadata::getType);
         }
 
         private Type checkedTypeLookup(Symbol symbol)
@@ -483,7 +484,7 @@ public final class DomainTranslator
             Map<NodeRef<Expression>, Type> expressionTypes = analyzeExpression(cast);
             Type actualType = expressionTypes.get(NodeRef.of(cast.getExpression()));
             Type expectedType = expressionTypes.get(NodeRef.<Expression>of(cast));
-            return metadata.getTypeManager().canCoerce(actualType, expectedType);
+            return typeCoercion.canCoerce(actualType, expectedType);
         }
 
         private Map<NodeRef<Expression>, Type> analyzeExpression(Expression expression)
@@ -658,17 +659,19 @@ public final class DomainTranslator
                     .map((operator) -> functionInvoker.invoke(operator, session.toConnectorSession(), value));
         }
 
-        private Optional<Signature> getSaturatedFloorCastOperator(Type fromType, Type toType)
+        private Optional<ResolvedFunction> getSaturatedFloorCastOperator(Type fromType, Type toType)
         {
-            if (metadata.getFunctionRegistry().canResolveOperator(SATURATED_FLOOR_CAST, toType, ImmutableList.of(fromType))) {
-                return Optional.of(internalOperator(SATURATED_FLOOR_CAST, toType, ImmutableList.of(fromType)));
+            try {
+                return Optional.of(metadata.getCoercion(SATURATED_FLOOR_CAST, fromType, toType));
             }
-            return Optional.empty();
+            catch (OperatorNotFoundException e) {
+                return Optional.empty();
+            }
         }
 
         private int compareOriginalValueToCoerced(Type originalValueType, Object originalValue, Type coercedValueType, Object coercedValue)
         {
-            Signature castToOriginalTypeOperator = metadata.getFunctionRegistry().getCoercion(coercedValueType, originalValueType);
+            ResolvedFunction castToOriginalTypeOperator = metadata.getCoercion(coercedValueType, originalValueType);
             Object coercedValueInOriginalType = functionInvoker.invoke(castToOriginalTypeOperator, session.toConnectorSession(), coercedValue);
             Block originalValueBlock = Utils.nativeValueToBlock(originalValueType, originalValue);
             Block coercedValueBlock = Utils.nativeValueToBlock(originalValueType, coercedValueInOriginalType);

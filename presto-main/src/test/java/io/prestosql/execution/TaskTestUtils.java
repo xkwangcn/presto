@@ -22,12 +22,12 @@ import io.prestosql.event.SplitMonitor;
 import io.prestosql.eventlistener.EventListenerManager;
 import io.prestosql.execution.TestSqlTaskManager.MockExchangeClientSupplier;
 import io.prestosql.execution.buffer.OutputBuffers;
-import io.prestosql.execution.scheduler.LegacyNetworkTopology;
 import io.prestosql.execution.scheduler.NodeScheduler;
 import io.prestosql.execution.scheduler.NodeSchedulerConfig;
+import io.prestosql.execution.scheduler.UniformNodeSelectorFactory;
 import io.prestosql.index.IndexManager;
 import io.prestosql.metadata.InMemoryNodeManager;
-import io.prestosql.metadata.MetadataManager;
+import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Split;
 import io.prestosql.operator.LookupJoinOperators;
 import io.prestosql.operator.PagesIndex;
@@ -60,6 +60,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 
 import static io.prestosql.SessionTestUtils.TEST_SESSION;
+import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
 import static io.prestosql.operator.StageExecutionDescriptor.ungroupedExecution;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
@@ -69,9 +70,7 @@ import static io.prestosql.testing.TestingHandles.TEST_TABLE_HANDLE;
 
 public final class TaskTestUtils
 {
-    private TaskTestUtils()
-    {
-    }
+    private TaskTestUtils() {}
 
     public static final PlanNodeId TABLE_SCAN_NODE_ID = new PlanNodeId("tableScan");
 
@@ -101,7 +100,7 @@ public final class TaskTestUtils
 
     public static LocalExecutionPlanner createTestingPlanner()
     {
-        MetadataManager metadata = MetadataManager.createTestMetadataManager();
+        Metadata metadata = createTestMetadataManager();
 
         PageSourceManager pageSourceManager = new PageSourceManager();
         pageSourceManager.addConnectorPageSourceProvider(CONNECTOR_ID, new TestingPageSourceProvider());
@@ -109,11 +108,10 @@ public final class TaskTestUtils
         // we don't start the finalizer so nothing will be collected, which is ok for a test
         FinalizerService finalizerService = new FinalizerService();
 
-        NodeScheduler nodeScheduler = new NodeScheduler(
-                new LegacyNetworkTopology(),
+        NodeScheduler nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(
                 new InMemoryNodeManager(),
                 new NodeSchedulerConfig().setIncludeCoordinator(true),
-                new NodeTaskMap(finalizerService));
+                new NodeTaskMap(finalizerService)));
         NodePartitioningManager nodePartitioningManager = new NodePartitioningManager(nodeScheduler);
 
         PageFunctionCompiler pageFunctionCompiler = new PageFunctionCompiler(metadata, 0);
@@ -141,7 +139,7 @@ public final class TaskTestUtils
                     throw new UnsupportedOperationException();
                 },
                 new PagesIndex.TestingFactory(false),
-                new JoinCompiler(MetadataManager.createTestMetadataManager()),
+                new JoinCompiler(metadata),
                 new LookupJoinOperators(),
                 new OrderingCompiler());
     }

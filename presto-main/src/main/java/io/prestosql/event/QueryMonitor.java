@@ -148,7 +148,6 @@ public class QueryMonitor
                         ofMillis(queryInfo.getQueryStats().getQueuedTime().toMillis()),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.empty(),
                         0,
                         0,
                         0,
@@ -225,11 +224,10 @@ public class QueryMonitor
         QueryStats queryStats = queryInfo.getQueryStats();
         return new QueryStatistics(
                 ofMillis(queryStats.getTotalCpuTime().toMillis()),
-                ofMillis(queryStats.getTotalScheduledTime().toMillis()),
+                ofMillis(queryStats.getElapsedTime().toMillis()),
                 ofMillis(queryStats.getQueuedTime().toMillis()),
                 Optional.of(ofMillis(queryStats.getResourceWaitingTime().toMillis())),
                 Optional.of(ofMillis(queryStats.getAnalysisTime().toMillis())),
-                Optional.of(ofMillis(queryStats.getDistributedPlanningTime().toMillis())),
                 queryStats.getPeakUserMemoryReservation().toBytes(),
                 queryStats.getPeakTotalMemoryReservation().toBytes(),
                 queryStats.getPeakTaskUserMemory().toBytes(),
@@ -387,7 +385,7 @@ public class QueryMonitor
             }
 
             // planning duration -- start to end of planning
-            long planning = queryStats.getTotalPlanningTime().toMillis();
+            long planning = queryStats.getPlanningTime().toMillis();
 
             // Time spent waiting for required no. of worker nodes to be present
             long waiting = queryStats.getResourceWaitingTime().toMillis();

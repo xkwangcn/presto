@@ -17,12 +17,11 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
 import io.prestosql.Session;
 import io.prestosql.execution.warnings.WarningCollector;
-import io.prestosql.metadata.Signature;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.spi.block.SortOrder;
 import io.prestosql.sql.planner.DeterminismEvaluator;
 import io.prestosql.sql.planner.OrderingScheme;
@@ -35,6 +34,7 @@ import io.prestosql.sql.planner.plan.AggregationNode;
 import io.prestosql.sql.planner.plan.ApplyNode;
 import io.prestosql.sql.planner.plan.AssignUniqueId;
 import io.prestosql.sql.planner.plan.Assignments;
+import io.prestosql.sql.planner.plan.CorrelatedJoinNode;
 import io.prestosql.sql.planner.plan.DeleteNode;
 import io.prestosql.sql.planner.plan.DistinctLimitNode;
 import io.prestosql.sql.planner.plan.EnforceSingleRowNode;
@@ -47,7 +47,6 @@ import io.prestosql.sql.planner.plan.IndexJoinNode;
 import io.prestosql.sql.planner.plan.IndexSourceNode;
 import io.prestosql.sql.planner.plan.IntersectNode;
 import io.prestosql.sql.planner.plan.JoinNode;
-import io.prestosql.sql.planner.plan.LateralJoinNode;
 import io.prestosql.sql.planner.plan.LimitNode;
 import io.prestosql.sql.planner.plan.MarkDistinctNode;
 import io.prestosql.sql.planner.plan.OffsetNode;
@@ -76,7 +75,6 @@ import io.prestosql.sql.planner.plan.WindowNode;
 import io.prestosql.sql.tree.Expression;
 import io.prestosql.sql.tree.ExpressionRewriter;
 import io.prestosql.sql.tree.ExpressionTreeRewriter;
-import io.prestosql.sql.tree.FunctionCall;
 import io.prestosql.sql.tree.NullLiteral;
 import io.prestosql.sql.tree.SymbolReference;
 
@@ -88,6 +86,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -184,7 +183,14 @@ public class UnaliasSymbolReferences
             for (Map.Entry<Symbol, List<Symbol>> entry : node.getUnnestSymbols().entrySet()) {
                 builder.put(canonicalize(entry.getKey()), entry.getValue());
             }
-            return new UnnestNode(node.getId(), source, canonicalizeAndDistinct(node.getReplicateSymbols()), builder.build(), node.getOrdinalitySymbol());
+            return new UnnestNode(
+                    node.getId(),
+                    source,
+                    canonicalizeAndDistinct(node.getReplicateSymbols()),
+                    builder.build(),
+                    node.getOrdinalitySymbol(),
+                    node.getJoinType(),
+                    node.getFilter().map(this::canonicalize));
         }
 
         @Override
@@ -193,15 +199,13 @@ public class UnaliasSymbolReferences
             PlanNode source = context.rewrite(node.getSource());
 
             ImmutableMap.Builder<Symbol, WindowNode.Function> functions = ImmutableMap.builder();
-            for (Map.Entry<Symbol, WindowNode.Function> entry : node.getWindowFunctions().entrySet()) {
-                Symbol symbol = entry.getKey();
+            node.getWindowFunctions().forEach((symbol, function) -> {
+                ResolvedFunction resolvedFunction = function.getResolvedFunction();
+                List<Expression> arguments = canonicalize(function.getArguments());
+                WindowNode.Frame canonicalFrame = canonicalize(function.getFrame());
 
-                FunctionCall canonicalFunctionCall = (FunctionCall) canonicalize(entry.getValue().getFunctionCall());
-                Signature signature = entry.getValue().getSignature();
-                WindowNode.Frame canonicalFrame = canonicalize(entry.getValue().getFrame());
-
-                functions.put(canonicalize(symbol), new WindowNode.Function(canonicalFunctionCall, signature, canonicalFrame));
-            }
+                functions.put(canonicalize(symbol), new WindowNode.Function(resolvedFunction, arguments, canonicalFrame, function.isIgnoreNulls()));
+            });
 
             return new WindowNode(
                     node.getId(),
@@ -466,13 +470,13 @@ public class UnaliasSymbolReferences
         }
 
         @Override
-        public PlanNode visitLateralJoin(LateralJoinNode node, RewriteContext<Void> context)
+        public PlanNode visitCorrelatedJoin(CorrelatedJoinNode node, RewriteContext<Void> context)
         {
             PlanNode source = context.rewrite(node.getInput());
             PlanNode subquery = context.rewrite(node.getSubquery());
             List<Symbol> canonicalCorrelation = canonicalizeAndDistinct(node.getCorrelation());
 
-            return new LateralJoinNode(node.getId(), source, subquery, canonicalCorrelation, node.getType(), canonicalize(node.getFilter()), node.getOriginSubquery());
+            return new CorrelatedJoinNode(node.getId(), source, subquery, canonicalCorrelation, node.getType(), canonicalize(node.getFilter()), node.getOriginSubquery());
         }
 
         @Override
@@ -771,7 +775,11 @@ public class UnaliasSymbolReferences
             for (Map.Entry<Symbol, Collection<Symbol>> entry : setOperationSymbolMap.asMap().entrySet()) {
                 Symbol canonicalOutputSymbol = canonicalize(entry.getKey());
                 if (addedSymbols.add(canonicalOutputSymbol)) {
-                    builder.putAll(canonicalOutputSymbol, Iterables.transform(entry.getValue(), this::canonicalize));
+                    builder.putAll(
+                            canonicalOutputSymbol,
+                            entry.getValue().stream()
+                                    .map(this::canonicalize)
+                                    .collect(Collectors.toList()));
                 }
             }
             return builder.build();

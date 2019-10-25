@@ -24,6 +24,7 @@ import javax.ws.rs.WebApplicationException;
 
 import java.util.Optional;
 
+import static com.google.common.net.HttpHeaders.X_FORWARDED_FOR;
 import static io.prestosql.SystemSessionProperties.HASH_PARTITION_COUNT;
 import static io.prestosql.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.prestosql.SystemSessionProperties.QUERY_MAX_MEMORY;
@@ -39,6 +40,10 @@ import static io.prestosql.client.PrestoHeaders.PRESTO_SESSION;
 import static io.prestosql.client.PrestoHeaders.PRESTO_SOURCE;
 import static io.prestosql.client.PrestoHeaders.PRESTO_TIME_ZONE;
 import static io.prestosql.client.PrestoHeaders.PRESTO_USER;
+import static io.prestosql.dispatcher.DispatcherConfig.HeaderSupport.ACCEPT;
+import static io.prestosql.dispatcher.DispatcherConfig.HeaderSupport.IGNORE;
+import static io.prestosql.dispatcher.DispatcherConfig.HeaderSupport.WARN;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertEquals;
 
 public class TestHttpRequestSessionContext
@@ -68,12 +73,12 @@ public class TestHttpRequestSessionContext
                         .build(),
                 "testRemote");
 
-        HttpRequestSessionContext context = new HttpRequestSessionContext(request);
+        HttpRequestSessionContext context = new HttpRequestSessionContext(WARN, request);
         assertEquals(context.getSource(), "testSource");
         assertEquals(context.getCatalog(), "testCatalog");
         assertEquals(context.getSchema(), "testSchema");
         assertEquals(context.getPath(), "testPath");
-        assertEquals(context.getIdentity(), new Identity("testUser", Optional.empty()));
+        assertEquals(context.getIdentity(), Identity.ofUser("testUser"));
         assertEquals(context.getClientInfo(), "client-info");
         assertEquals(context.getLanguage(), "zh-TW");
         assertEquals(context.getTimeZoneId(), "Asia/Taipei");
@@ -90,7 +95,7 @@ public class TestHttpRequestSessionContext
         assertEquals(context.getIdentity().getExtraCredentials(), ImmutableMap.of("test.token.foo", "bar", "test.token.abc", "xyz"));
     }
 
-    @Test(expectedExceptions = WebApplicationException.class)
+    @Test
     public void testPreparedStatementsHeaderDoesNotParse()
     {
         HttpServletRequest request = new MockHttpServletRequest(
@@ -106,6 +111,32 @@ public class TestHttpRequestSessionContext
                         .put(PRESTO_PREPARED_STATEMENT, "query1=abcdefg")
                         .build(),
                 "testRemote");
-        new HttpRequestSessionContext(request);
+        assertThatThrownBy(() -> new HttpRequestSessionContext(WARN, request))
+                .isInstanceOf(WebApplicationException.class)
+                .hasMessageMatching("Invalid X-Presto-Prepared-Statement header: line 1:1: mismatched input 'abcdefg'. Expecting: .*");
+    }
+
+    @Test
+    public void testXForwardedFor()
+    {
+        HttpServletRequest plainRequest = requestWithXForwardedFor(Optional.empty(), "remote_address");
+        HttpServletRequest requestWithXForwardedFor = requestWithXForwardedFor(Optional.of("forwarded_client"), "proxy_address");
+
+        assertEquals(new HttpRequestSessionContext(IGNORE, plainRequest).getRemoteUserAddress(), "remote_address");
+        assertEquals(new HttpRequestSessionContext(IGNORE, requestWithXForwardedFor).getRemoteUserAddress(), "proxy_address");
+
+        assertEquals(new HttpRequestSessionContext(ACCEPT, plainRequest).getRemoteUserAddress(), "remote_address");
+        assertEquals(new HttpRequestSessionContext(ACCEPT, requestWithXForwardedFor).getRemoteUserAddress(), "forwarded_client");
+
+        assertEquals(new HttpRequestSessionContext(WARN, plainRequest).getRemoteUserAddress(), "remote_address");
+        assertEquals(new HttpRequestSessionContext(WARN, requestWithXForwardedFor).getRemoteUserAddress(), "proxy_address"); // this generates a warning to logs
+    }
+
+    private static HttpServletRequest requestWithXForwardedFor(Optional<String> xForwardedFor, String remoteAddress)
+    {
+        ImmutableListMultimap.Builder<String, String> headers = ImmutableListMultimap.<String, String>builder()
+                .put(PRESTO_USER, "testUser");
+        xForwardedFor.ifPresent(value -> headers.put(X_FORWARDED_FOR, value));
+        return new MockHttpServletRequest(headers.build(), remoteAddress);
     }
 }

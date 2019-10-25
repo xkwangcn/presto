@@ -32,6 +32,7 @@ import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
 import static io.prestosql.metadata.FunctionKind.SCALAR;
 import static io.prestosql.metadata.PolymorphicScalarFunctionBuilder.constant;
+import static io.prestosql.operator.TypeSignatureParser.parseTypeSignature;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.BLOCK_AND_POSITION;
 import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.USE_NULL_FLAG;
@@ -44,13 +45,12 @@ import static io.prestosql.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.prestosql.spi.function.OperatorType.LESS_THAN;
 import static io.prestosql.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.prestosql.spi.function.OperatorType.NOT_EQUAL;
-import static io.prestosql.spi.type.StandardTypes.BOOLEAN;
-import static io.prestosql.spi.type.TypeSignature.parseTypeSignature;
+import static io.prestosql.spi.type.BooleanType.BOOLEAN;
 import static io.prestosql.spi.type.UnscaledDecimal128Arithmetic.compare;
 import static io.prestosql.util.Reflection.methodHandle;
 import static java.util.Arrays.asList;
 
-public class DecimalInequalityOperators
+public final class DecimalInequalityOperators
 {
     private static final TypeSignature DECIMAL_SIGNATURE = parseTypeSignature("decimal(a_precision, a_scale)", ImmutableSet.of("a_precision", "a_scale"));
 
@@ -114,7 +114,7 @@ public class DecimalInequalityOperators
                 .kind(SCALAR)
                 .operatorType(operatorType)
                 .argumentTypes(DECIMAL_SIGNATURE, DECIMAL_SIGNATURE)
-                .returnType(parseTypeSignature(BOOLEAN))
+                .returnType(BOOLEAN.getTypeSignature())
                 .build();
         return SqlScalarFunction.builder(DecimalInequalityOperators.class)
                 .signature(signature)
@@ -263,7 +263,7 @@ public class DecimalInequalityOperators
                 .kind(SCALAR)
                 .operatorType(BETWEEN)
                 .argumentTypes(DECIMAL_SIGNATURE, DECIMAL_SIGNATURE, DECIMAL_SIGNATURE)
-                .returnType(parseTypeSignature(BOOLEAN))
+                .returnType(BOOLEAN.getTypeSignature())
                 .build();
         return SqlScalarFunction.builder(DecimalInequalityOperators.class)
                 .signature(signature)

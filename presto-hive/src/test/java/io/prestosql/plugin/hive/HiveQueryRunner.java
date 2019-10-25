@@ -15,13 +15,12 @@ package io.prestosql.plugin.hive;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import io.airlift.log.Logger;
 import io.airlift.log.Logging;
 import io.airlift.tpch.TpchTable;
 import io.prestosql.Session;
 import io.prestosql.metadata.QualifiedObjectName;
-import io.prestosql.plugin.hive.authentication.NoHdfsAuthentication;
+import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.plugin.hive.metastore.Database;
 import io.prestosql.plugin.hive.metastore.file.FileHiveMetastore;
 import io.prestosql.plugin.tpch.TpchPlugin;
@@ -41,8 +40,10 @@ import java.util.Optional;
 
 import static io.airlift.log.Level.WARN;
 import static io.airlift.units.Duration.nanosSince;
+import static io.prestosql.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
 import static io.prestosql.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.prestosql.spi.security.SelectedRole.Type.ROLE;
+import static io.prestosql.testing.TestingConnectorSession.SESSION;
 import static io.prestosql.testing.TestingSession.testSessionBuilder;
 import static io.prestosql.tests.QueryAssertions.copyTpchTables;
 import static java.lang.String.format;
@@ -102,11 +103,7 @@ public final class HiveQueryRunner
 
             File baseDir = queryRunner.getCoordinator().getBaseDataDir().resolve("hive_data").toFile();
 
-            HiveConfig hiveConfig = new HiveConfig();
-            HdfsConfiguration hdfsConfiguration = new HiveHdfsConfiguration(new HdfsConfigurationInitializer(hiveConfig), ImmutableSet.of());
-            HdfsEnvironment hdfsEnvironment = new HdfsEnvironment(hdfsConfiguration, hiveConfig, new NoHdfsAuthentication());
-
-            FileHiveMetastore metastore = new FileHiveMetastore(hdfsEnvironment, baseDir.toURI().toString(), "test");
+            FileHiveMetastore metastore = new FileHiveMetastore(HDFS_ENVIRONMENT, baseDir.toURI().toString(), "test");
             queryRunner.installPlugin(new HivePlugin(HIVE_CATALOG, Optional.of(metastore)));
 
             Map<String, String> hiveProperties = ImmutableMap.<String, String>builder()
@@ -115,7 +112,6 @@ public final class HiveQueryRunner
                     .put("hive.security", security)
                     .put("hive.max-partitions-per-scan", "1000")
                     .put("hive.assume-canonical-partition-keys", "true")
-                    .put("hive.collect-column-statistics-on-write", "true")
                     .build();
             Map<String, String> hiveBucketedProperties = ImmutableMap.<String, String>builder()
                     .putAll(hiveProperties)
@@ -127,13 +123,14 @@ public final class HiveQueryRunner
             queryRunner.createCatalog(HIVE_CATALOG, HIVE_CATALOG, hiveProperties);
             queryRunner.createCatalog(HIVE_BUCKETED_CATALOG, HIVE_CATALOG, hiveBucketedProperties);
 
+            HiveIdentity identity = new HiveIdentity(SESSION);
             if (!metastore.getDatabase(TPCH_SCHEMA).isPresent()) {
-                metastore.createDatabase(createDatabaseMetastoreObject(TPCH_SCHEMA));
+                metastore.createDatabase(identity, createDatabaseMetastoreObject(TPCH_SCHEMA));
                 copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, createSession(Optional.empty()), tables);
             }
 
             if (!metastore.getDatabase(TPCH_BUCKETED_SCHEMA).isPresent()) {
-                metastore.createDatabase(createDatabaseMetastoreObject(TPCH_BUCKETED_SCHEMA));
+                metastore.createDatabase(identity, createDatabaseMetastoreObject(TPCH_BUCKETED_SCHEMA));
                 copyTpchTablesBucketed(queryRunner, "tpch", TINY_SCHEMA_NAME, createBucketedSession(Optional.empty()), tables);
             }
 
@@ -163,11 +160,10 @@ public final class HiveQueryRunner
     public static Session createSession(Optional<SelectedRole> role)
     {
         return testSessionBuilder()
-                .setIdentity(new Identity(
-                        "hive",
-                        Optional.empty(),
-                        role.map(selectedRole -> ImmutableMap.of("hive", selectedRole))
-                                .orElse(ImmutableMap.of())))
+                .setIdentity(Identity.forUser("hive")
+                        .withRoles(role.map(selectedRole -> ImmutableMap.of("hive", selectedRole))
+                                .orElse(ImmutableMap.of()))
+                        .build())
                 .setCatalog(HIVE_CATALOG)
                 .setSchema(TPCH_SCHEMA)
                 .build();
@@ -176,11 +172,10 @@ public final class HiveQueryRunner
     public static Session createBucketedSession(Optional<SelectedRole> role)
     {
         return testSessionBuilder()
-                .setIdentity(new Identity(
-                        "hive",
-                        Optional.empty(),
-                        role.map(selectedRole -> ImmutableMap.of("hive", selectedRole))
-                                .orElse(ImmutableMap.of())))
+                .setIdentity(Identity.forUser("hive")
+                        .withRoles(role.map(selectedRole -> ImmutableMap.of("hive", selectedRole))
+                                .orElse(ImmutableMap.of()))
+                        .build())
                 .setCatalog(HIVE_BUCKETED_CATALOG)
                 .setSchema(TPCH_BUCKETED_SCHEMA)
                 .build();
@@ -233,7 +228,7 @@ public final class HiveQueryRunner
     public static void main(String[] args)
             throws Exception
     {
-        // You need to add "--user user" to your CLI for your queries to work
+        // You need to add "--user admin" to your CLI and execute "SET ROLE admin" for queries to work
         Logging.initialize();
 
         Optional<Path> baseDataDir = Optional.empty();

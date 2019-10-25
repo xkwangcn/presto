@@ -14,6 +14,7 @@
 package io.prestosql.plugin.hive.metastore.thrift;
 
 import io.airlift.units.Duration;
+import io.prestosql.plugin.hive.authentication.HiveAuthenticationConfig;
 import org.apache.thrift.TException;
 import org.testng.annotations.Test;
 
@@ -50,7 +51,7 @@ public class TestStaticMetastoreLocator
             throws TException
     {
         MetastoreLocator locator = createMetastoreLocator(CONFIG_WITH_FALLBACK, singletonList(DEFAULT_CLIENT));
-        assertEquals(locator.createMetastoreClient(), DEFAULT_CLIENT);
+        assertEquals(locator.createMetastoreClient(Optional.empty()), DEFAULT_CLIENT);
     }
 
     @Test
@@ -58,7 +59,7 @@ public class TestStaticMetastoreLocator
             throws TException
     {
         MetastoreLocator locator = createMetastoreLocator(CONFIG_WITH_FALLBACK, asList(null, null, FALLBACK_CLIENT));
-        assertEquals(locator.createMetastoreClient(), FALLBACK_CLIENT);
+        assertEquals(locator.createMetastoreClient(Optional.empty()), FALLBACK_CLIENT);
     }
 
     @Test
@@ -80,7 +81,7 @@ public class TestStaticMetastoreLocator
             throws TException
     {
         MetastoreLocator locator = createMetastoreLocator(CONFIG_WITH_FALLBACK_WITH_USER, asList(null, null, FALLBACK_CLIENT));
-        assertEquals(locator.createMetastoreClient(), FALLBACK_CLIENT);
+        assertEquals(locator.createMetastoreClient(Optional.empty()), FALLBACK_CLIENT);
     }
 
     @Test
@@ -92,14 +93,14 @@ public class TestStaticMetastoreLocator
 
     private static void assertCreateClientFails(MetastoreLocator locator, String message)
     {
-        assertThatThrownBy(locator::createMetastoreClient)
+        assertThatThrownBy(() -> locator.createMetastoreClient(Optional.empty()))
                 .hasCauseInstanceOf(TException.class)
                 .hasMessage(message);
     }
 
     private static MetastoreLocator createMetastoreLocator(StaticMetastoreConfig config, List<ThriftMetastoreClient> clients)
     {
-        return new StaticMetastoreLocator(config, new MockHiveMetastoreClientFactory(Optional.empty(), new Duration(1, SECONDS), clients));
+        return new StaticMetastoreLocator(config, new HiveAuthenticationConfig(), new MockThriftMetastoreClientFactory(Optional.empty(), new Duration(1, SECONDS), clients));
     }
 
     private static ThriftMetastoreClient createFakeMetastoreClient()

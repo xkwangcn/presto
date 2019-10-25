@@ -72,7 +72,7 @@ public class MetadataQueryOptimizer
         requireNonNull(metadata, "metadata is null");
 
         this.metadata = metadata;
-        this.literalEncoder = new LiteralEncoder(metadata.getBlockEncodingSerde());
+        this.literalEncoder = new LiteralEncoder(metadata);
     }
 
     @Override
@@ -105,7 +105,7 @@ public class MetadataQueryOptimizer
         {
             // supported functions are only MIN/MAX/APPROX_DISTINCT or distinct aggregates
             for (Aggregation aggregation : node.getAggregations().values()) {
-                if (!ALLOWED_FUNCTIONS.contains(aggregation.getCall().getName().toString()) && !aggregation.getCall().isDistinct()) {
+                if (!ALLOWED_FUNCTIONS.contains(aggregation.getResolvedFunction().getSignature().getName()) && !aggregation.isDistinct()) {
                     return context.defaultRewrite(node);
                 }
             }

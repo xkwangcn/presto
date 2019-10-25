@@ -15,6 +15,7 @@ package io.prestosql.cost;
 
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.prestosql.Session;
 import io.prestosql.execution.warnings.WarningCollector;
 import io.prestosql.metadata.Metadata;
@@ -69,7 +70,7 @@ import static java.lang.Double.isInfinite;
 import static java.lang.Double.isNaN;
 import static java.lang.Double.min;
 import static java.lang.String.format;
-import static java.util.Collections.emptyList;
+import static java.util.Collections.emptyMap;
 import static java.util.Objects.requireNonNull;
 
 public class FilterStatsCalculator
@@ -86,7 +87,7 @@ public class FilterStatsCalculator
         this.metadata = requireNonNull(metadata, "metadata is null");
         this.scalarStatsCalculator = requireNonNull(scalarStatsCalculator, "scalarStatsCalculator is null");
         this.normalizer = requireNonNull(normalizer, "normalizer is null");
-        this.literalEncoder = new LiteralEncoder(metadata.getBlockEncodingSerde());
+        this.literalEncoder = new LiteralEncoder(metadata);
     }
 
     public PlanNodeStatsEstimate filterStats(
@@ -118,11 +119,10 @@ public class FilterStatsCalculator
     private Map<NodeRef<Expression>, Type> getExpressionTypes(Session session, Expression expression, TypeProvider types)
     {
         ExpressionAnalyzer expressionAnalyzer = ExpressionAnalyzer.createWithoutSubqueries(
-                metadata.getFunctionRegistry(),
-                metadata.getTypeManager(),
+                metadata,
                 session,
                 types,
-                emptyList(),
+                emptyMap(),
                 node -> new IllegalStateException("Unexpected node: %s" + node),
                 WarningCollector.NOOP,
                 false);
@@ -393,7 +393,7 @@ public class FilterStatsCalculator
         @Override
         protected PlanNodeStatsEstimate visitFunctionCall(FunctionCall node, Void context)
         {
-            if (isDynamicFilter(node)) {
+            if (isDynamicFilter(metadata, node)) {
                 return process(BooleanLiteral.TRUE_LITERAL, context);
             }
             return PlanNodeStatsEstimate.unknown();
@@ -407,11 +407,10 @@ public class FilterStatsCalculator
             }
 
             ExpressionAnalyzer expressionAnalyzer = ExpressionAnalyzer.createWithoutSubqueries(
-                    metadata.getFunctionRegistry(),
-                    metadata.getTypeManager(),
+                    metadata,
                     session,
                     types,
-                    ImmutableList.of(),
+                    ImmutableMap.of(),
                     // At this stage, there should be no subqueries in the plan.
                     node -> new VerifyException("Unexpected subquery"),
                     WarningCollector.NOOP,

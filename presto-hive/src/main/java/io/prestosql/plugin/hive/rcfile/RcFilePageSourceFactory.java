@@ -57,7 +57,7 @@ import static com.google.common.base.Strings.nullToEmpty;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_BAD_DATA;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_MISSING_DATA;
-import static io.prestosql.plugin.hive.HiveUtil.getDeserializerClassName;
+import static io.prestosql.plugin.hive.util.HiveUtil.getDeserializerClassName;
 import static io.prestosql.rcfile.text.TextRcFileEncoding.DEFAULT_NULL_SEQUENCE;
 import static io.prestosql.rcfile.text.TextRcFileEncoding.DEFAULT_SEPARATORS;
 import static java.lang.String.format;
@@ -122,7 +122,7 @@ public class RcFilePageSourceFactory
         FSDataInputStream inputStream;
         try {
             FileSystem fileSystem = hdfsEnvironment.getFileSystem(session.getUser(), path, configuration);
-            inputStream = fileSystem.open(path);
+            inputStream = hdfsEnvironment.doAs(session.getUser(), () -> fileSystem.open(path));
         }
         catch (Exception e) {
             if (nullToEmpty(e.getMessage()).trim().equals("Filesystem closed") ||
@@ -147,7 +147,7 @@ public class RcFilePageSourceFactory
                     length,
                     new DataSize(8, Unit.MEGABYTE));
 
-            return Optional.of(new RcFilePageSource(rcFileReader, columns, typeManager));
+            return Optional.of(new RcFilePageSource(rcFileReader, columns));
         }
         catch (Throwable e) {
             try {
@@ -188,7 +188,9 @@ public class RcFilePageSourceFactory
 
         // the first three separators are set by old-old properties
         separators[0] = getByte(schema.getProperty(FIELD_DELIM, schema.getProperty(SERIALIZATION_FORMAT)), DEFAULT_SEPARATORS[0]);
-        separators[1] = getByte(schema.getProperty(COLLECTION_DELIM), DEFAULT_SEPARATORS[1]);
+        // for map field collection delimiter, Hive 1.x uses "colelction.delim" but Hive 3.x uses "collection.delim"
+        // https://issues.apache.org/jira/browse/HIVE-16922
+        separators[1] = getByte(schema.getProperty(COLLECTION_DELIM, schema.getProperty("colelction.delim")), DEFAULT_SEPARATORS[1]);
         separators[2] = getByte(schema.getProperty(MAPKEY_DELIM), DEFAULT_SEPARATORS[2]);
 
         // null sequence

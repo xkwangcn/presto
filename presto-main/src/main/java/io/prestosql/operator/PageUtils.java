@@ -19,31 +19,41 @@ import io.prestosql.spi.block.LazyBlock;
 
 import java.util.function.LongConsumer;
 
-final class PageUtils
+public final class PageUtils
 {
-    private PageUtils()
-    {
-    }
+    private PageUtils() {}
 
-    static Page recordMaterializedBytes(Page page, LongConsumer sizeInBytesConsumer)
+    public static Page recordMaterializedBytes(Page page, LongConsumer sizeInBytesConsumer)
     {
         // account processed bytes from lazy blocks only when they are loaded
         Block[] blocks = new Block[page.getChannelCount()];
+        long loadedBlocksSizeInBytes = 0;
+        boolean allBlocksLoaded = true;
+
         for (int i = 0; i < page.getChannelCount(); ++i) {
             Block block = page.getBlock(i);
-            if (block instanceof LazyBlock) {
-                LazyBlock delegateLazyBlock = (LazyBlock) block;
+            if (block.isLoaded()) {
+                loadedBlocksSizeInBytes += block.getSizeInBytes();
+                blocks[i] = block;
+            }
+            else {
                 blocks[i] = new LazyBlock(page.getPositionCount(), lazyBlock -> {
-                    Block loadedBlock = delegateLazyBlock.getLoadedBlock();
+                    Block loadedBlock = block.getLoadedBlock();
                     sizeInBytesConsumer.accept(loadedBlock.getSizeInBytes());
                     lazyBlock.setBlock(loadedBlock);
                 });
-            }
-            else {
-                sizeInBytesConsumer.accept(block.getSizeInBytes());
-                blocks[i] = block;
+                allBlocksLoaded = false;
             }
         }
+
+        if (loadedBlocksSizeInBytes > 0) {
+            sizeInBytesConsumer.accept(loadedBlocksSizeInBytes);
+        }
+
+        if (allBlocksLoaded) {
+            return page;
+        }
+
         return new Page(page.getPositionCount(), blocks);
     }
 }
