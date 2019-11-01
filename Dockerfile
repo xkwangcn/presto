@@ -105,7 +105,7 @@ RUN chmod +x /usr/bin/tini
 
 RUN mkdir -p /opt/presto
 
-ENV PRESTO_VERSION 322
+ENV PRESTO_VERSION 320
 ENV PRESTO_HOME /opt/presto/presto-server
 ENV PRESTO_CLI /opt/presto/presto-cli
 ENV PROMETHEUS_JMX_EXPORTER /opt/jmx_exporter/jmx_exporter.jar
