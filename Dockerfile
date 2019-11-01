@@ -77,6 +77,7 @@ COPY presto-password-authenticators /build/presto-password-authenticators
 COPY src /build/src
 COPY pom.xml /build/pom.xml
 
+ENV MAVEN_OPTS -Djava.net.preferIPv4Stack=true -Dhttps.protocols=TLSv1.2
 # build presto
 RUN cd /build && mvn -B -e -DskipTests -DfailIfNoTests=false -Dtest=false clean package -pl '!presto-testing-docker'
 
