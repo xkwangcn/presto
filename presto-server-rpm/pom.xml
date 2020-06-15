@@ -54,13 +54,13 @@
                     <packages>
                         <package>
                             <name>presto-server-rpm</name>
-                            <nameOverride>presto-server-rpm-${project.version}.x86_64.rpm</nameOverride>
+                            <nameOverride>presto-server-rpm-${project.version}.s390x.rpm</nameOverride>
                             <version>${project.version}</version>
                             <release>1</release>
 
                             <group>Applications/Databases</group>
                             <description>Presto Server RPM Package.</description>
-                            <architecture>x86_64</architecture>
+                            <architecture>s390x</architecture>
                             <preInstallScriptFile>src/main/rpm/preinstall</preInstallScriptFile>
                             <postInstallScriptFile>src/main/rpm/postinstall</postInstallScriptFile>
                             <preUninstallScriptFile>src/main/rpm/preremove</preUninstallScriptFile>
