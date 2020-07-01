@@ -19,11 +19,10 @@ import io.airlift.slice.Slices;
 import org.testng.annotations.Test;
 
 import java.math.BigInteger;
+import java.nio.ByteOrder;
 import java.util.Collections;
 
 import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
-import static io.airlift.slice.Slices.wrappedIntArray;
-import static io.airlift.slice.Slices.wrappedLongArray;
 import static io.prestosql.spi.type.Decimals.MAX_DECIMAL_UNSCALED_VALUE;
 import static io.prestosql.spi.type.Decimals.MIN_DECIMAL_UNSCALED_VALUE;
 import static io.prestosql.spi.type.Decimals.bigIntegerTenToNth;
@@ -60,6 +59,7 @@ public class TestUnscaledDecimal128Arithmetic
     private static final Slice MAX_DECIMAL = unscaledDecimal(MAX_DECIMAL_UNSCALED_VALUE);
     private static final Slice MIN_DECIMAL = unscaledDecimal(MIN_DECIMAL_UNSCALED_VALUE);
     private static final BigInteger TWO = BigInteger.valueOf(2);
+    private static final boolean IS_BIGENDIAN = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);
 
     @Test
     public void testUnscaledBigIntegerToDecimal()
@@ -163,8 +163,8 @@ public class TestUnscaledDecimal128Arithmetic
         assertEquals(multiply(unscaledDecimal(1), MIN_DECIMAL), MIN_DECIMAL);
         assertEquals(multiply(unscaledDecimal(-1), MAX_DECIMAL), MIN_DECIMAL);
         assertEquals(multiply(unscaledDecimal(-1), MIN_DECIMAL), MAX_DECIMAL);
-        assertEquals(multiply(wrappedIntArray(0xFFFFFFFF, 0xFFFFFFFF, 0, 0), wrappedIntArray(0xFFFFFFFF, 0x00FFFFFF, 0, 0)), wrappedLongArray(0xff00000000000001L, 0xfffffffffffffeL));
-        assertEquals(multiply(wrappedLongArray(0xFFFFFF0096BFB800L, 0), wrappedLongArray(0x39003539D9A51600L, 0)), wrappedLongArray(0x1CDBB17E11D00000L, 0x39003500FB00AB76L));
+        assertEquals(multiply(UnscaledDecimal128Arithmetic.wrappedIntArray(0xFFFFFFFF, 0xFFFFFFFF, 0, 0), UnscaledDecimal128Arithmetic.wrappedIntArray(0xFFFFFFFF, 0x00FFFFFF, 0, 0)), UnscaledDecimal128Arithmetic.wrappedLongArray(0xff00000000000001L, 0xfffffffffffffeL));
+        assertEquals(multiply(UnscaledDecimal128Arithmetic.wrappedLongArray(0xFFFFFF0096BFB800L, 0), UnscaledDecimal128Arithmetic.wrappedLongArray(0x39003539D9A51600L, 0)), UnscaledDecimal128Arithmetic.wrappedLongArray(0x1CDBB17E11D00000L, 0x39003500FB00AB76L));
         assertEquals(multiply(unscaledDecimal(Integer.MAX_VALUE), unscaledDecimal(Integer.MIN_VALUE)), unscaledDecimal((long) Integer.MAX_VALUE * Integer.MIN_VALUE));
         assertEquals(multiply(unscaledDecimal("99999999999999"), unscaledDecimal("-1000000000000000000000000")), unscaledDecimal("-99999999999999000000000000000000000000"));
         assertEquals(multiply(unscaledDecimal("12380837221737387489365741632769922889"), unscaledDecimal("3")), unscaledDecimal("37142511665212162468097224898309768667"));
@@ -173,12 +173,12 @@ public class TestUnscaledDecimal128Arithmetic
     @Test
     public void testMultiply256()
     {
-        assertMultiply256(MAX_DECIMAL, MAX_DECIMAL, wrappedLongArray(0xECEBBB8000000001L, 0xE0FF0CA0BC87870BL, 0x0764B4ABE8652978L, 0x161BCCA7119915B5L));
-        assertMultiply256(MIN_DECIMAL, MIN_DECIMAL, wrappedLongArray(0xECEBBB8000000001L, 0xE0FF0CA0BC87870BL, 0x0764B4ABE8652978L, 0x161BCCA7119915B5L));
-        assertMultiply256(wrappedLongArray(0xFFFFFFFFFFFFFFFFL, 0x0FFFFFFFFFFFFFFFL), wrappedLongArray(0xFFFFFFFFFFFFFFFFL, 0x0FFFFFFFFFFFFFFFL),
-                wrappedLongArray(0x0000000000000001L, 0xE000000000000000L, 0xFFFFFFFFFFFFFFFFL, 0x00FFFFFFFFFFFFFFL));
-        assertMultiply256(wrappedLongArray(0x1234567890ABCDEFL, 0x0EDCBA0987654321L), wrappedLongArray(0xFEDCBA0987654321L, 0x1234567890ABCDEL),
-                wrappedLongArray(0xC24A442FE55618CFL, 0xAA71A60D0DA49DDAL, 0x7C163D5A13DF8695L, 0x0010E8EEF9BD1294L));
+        assertMultiply256(MAX_DECIMAL, MAX_DECIMAL, UnscaledDecimal128Arithmetic.wrappedLongArray(0xECEBBB8000000001L, 0xE0FF0CA0BC87870BL, 0x0764B4ABE8652978L, 0x161BCCA7119915B5L));
+        assertMultiply256(MIN_DECIMAL, MIN_DECIMAL, UnscaledDecimal128Arithmetic.wrappedLongArray(0xECEBBB8000000001L, 0xE0FF0CA0BC87870BL, 0x0764B4ABE8652978L, 0x161BCCA7119915B5L));
+        assertMultiply256(UnscaledDecimal128Arithmetic.wrappedLongArray(0xFFFFFFFFFFFFFFFFL, 0x0FFFFFFFFFFFFFFFL), UnscaledDecimal128Arithmetic.wrappedLongArray(0xFFFFFFFFFFFFFFFFL, 0x0FFFFFFFFFFFFFFFL),
+                UnscaledDecimal128Arithmetic.wrappedLongArray(0x0000000000000001L, 0xE000000000000000L, 0xFFFFFFFFFFFFFFFFL, 0x00FFFFFFFFFFFFFFL));
+        assertMultiply256(UnscaledDecimal128Arithmetic.wrappedLongArray(0x1234567890ABCDEFL, 0x0EDCBA0987654321L), UnscaledDecimal128Arithmetic.wrappedLongArray(0xFEDCBA0987654321L, 0x1234567890ABCDEL),
+                UnscaledDecimal128Arithmetic.wrappedLongArray(0xC24A442FE55618CFL, 0xAA71A60D0DA49DDAL, 0x7C163D5A13DF8695L, 0x0010E8EEF9BD1294L));
     }
 
     private static void assertMultiply256(Slice left, Slice right, Slice expected)
@@ -538,15 +538,15 @@ public class TestUnscaledDecimal128Arithmetic
     @Test
     public void testShiftLeft()
     {
-        assertEquals(shiftLeft(wrappedLongArray(0x1234567890ABCDEFL, 0xEFDCBA0987654321L), 0), wrappedLongArray(0x1234567890ABCDEFL, 0xEFDCBA0987654321L));
-        assertEquals(shiftLeft(wrappedLongArray(0x1234567890ABCDEFL, 0xEFDCBA0987654321L), 1), wrappedLongArray(0x2468ACF121579BDEL, 0xDFB974130ECA8642L));
-        assertEquals(shiftLeft(wrappedLongArray(0x1234567890ABCDEFL, 0x00DCBA0987654321L), 8), wrappedLongArray(0x34567890ABCDEF00L, 0xDCBA098765432112L));
-        assertEquals(shiftLeft(wrappedLongArray(0x1234567890ABCDEFL, 0x0000BA0987654321L), 16), wrappedLongArray(0x567890ABCDEF0000L, 0xBA09876543211234L));
-        assertEquals(shiftLeft(wrappedLongArray(0x1234567890ABCDEFL, 0x0000000087654321L), 32), wrappedLongArray(0x90ABCDEF00000000L, 0x8765432112345678L));
-        assertEquals(shiftLeft(wrappedLongArray(0x1234567890ABCDEFL, 0L), 64), wrappedLongArray(0x0000000000000000L, 0x1234567890ABCDEFL));
-        assertEquals(shiftLeft(wrappedLongArray(0x0034567890ABCDEFL, 0L), 64 + 8), wrappedLongArray(0x0000000000000000L, 0x34567890ABCDEF00L));
-        assertEquals(shiftLeft(wrappedLongArray(0x000000000000CDEFL, 0L), 64 + 48), wrappedLongArray(0x0000000000000000L, 0xCDEF000000000000L));
-        assertEquals(shiftLeft(wrappedLongArray(0x1L, 0L), 64 + 63), wrappedLongArray(0x0000000000000000L, 0x8000000000000000L));
+        assertEquals(shiftLeft(UnscaledDecimal128Arithmetic.wrappedLongArray(0x1234567890ABCDEFL, 0xEFDCBA0987654321L), 0), UnscaledDecimal128Arithmetic.wrappedLongArray(0x1234567890ABCDEFL, 0xEFDCBA0987654321L));
+        assertEquals(shiftLeft(UnscaledDecimal128Arithmetic.wrappedLongArray(0x1234567890ABCDEFL, 0xEFDCBA0987654321L), 1), UnscaledDecimal128Arithmetic.wrappedLongArray(0x2468ACF121579BDEL, 0xDFB974130ECA8642L));
+        assertEquals(shiftLeft(UnscaledDecimal128Arithmetic.wrappedLongArray(0x1234567890ABCDEFL, 0x00DCBA0987654321L), 8), UnscaledDecimal128Arithmetic.wrappedLongArray(0x34567890ABCDEF00L, 0xDCBA098765432112L));
+        assertEquals(shiftLeft(UnscaledDecimal128Arithmetic.wrappedLongArray(0x1234567890ABCDEFL, 0x0000BA0987654321L), 16), UnscaledDecimal128Arithmetic.wrappedLongArray(0x567890ABCDEF0000L, 0xBA09876543211234L));
+        assertEquals(shiftLeft(UnscaledDecimal128Arithmetic.wrappedLongArray(0x1234567890ABCDEFL, 0x0000000087654321L), 32), UnscaledDecimal128Arithmetic.wrappedLongArray(0x90ABCDEF00000000L, 0x8765432112345678L));
+        assertEquals(shiftLeft(UnscaledDecimal128Arithmetic.wrappedLongArray(0x1234567890ABCDEFL, 0L), 64), UnscaledDecimal128Arithmetic.wrappedLongArray(0x0000000000000000L, 0x1234567890ABCDEFL));
+        assertEquals(shiftLeft(UnscaledDecimal128Arithmetic.wrappedLongArray(0x0034567890ABCDEFL, 0L), 64 + 8), UnscaledDecimal128Arithmetic.wrappedLongArray(0x0000000000000000L, 0x34567890ABCDEF00L));
+        assertEquals(shiftLeft(UnscaledDecimal128Arithmetic.wrappedLongArray(0x000000000000CDEFL, 0L), 64 + 48), UnscaledDecimal128Arithmetic.wrappedLongArray(0x0000000000000000L, 0xCDEF000000000000L));
+        assertEquals(shiftLeft(UnscaledDecimal128Arithmetic.wrappedLongArray(0x1L, 0L), 64 + 63), UnscaledDecimal128Arithmetic.wrappedLongArray(0x0000000000000000L, 0x8000000000000000L));
     }
 
     private void assertAddReturnOverflow(BigInteger left, BigInteger right)
@@ -606,7 +606,14 @@ public class TestUnscaledDecimal128Arithmetic
     private static void assertCompare(Slice left, Slice right, int expectedResult)
     {
         assertEquals(compare(left, right), expectedResult);
-        assertEquals(compare(left.getLong(0), left.getLong(SIZE_OF_LONG), right.getLong(0), right.getLong(SIZE_OF_LONG)), expectedResult);
+        if (IS_BIGENDIAN) {
+            Slice rleft = UnscaledDecimal128Arithmetic.reverseDecimal(left);
+            Slice rright = UnscaledDecimal128Arithmetic.reverseDecimal(right);
+            assertEquals(compare(rleft.getLong(SIZE_OF_LONG), rleft.getLong(0), rright.getLong(SIZE_OF_LONG), rright.getLong(0)), expectedResult);
+        }
+        else {
+            assertEquals(compare(left.getLong(0), left.getLong(SIZE_OF_LONG), right.getLong(0), right.getLong(SIZE_OF_LONG)), expectedResult);
+        }
     }
 
     private static void assertConvertsUnscaledBigIntegerToDecimal(BigInteger value)
@@ -657,6 +664,10 @@ public class TestUnscaledDecimal128Arithmetic
         int[] ints = toInt8Array(value);
         Slice result = unscaledDecimal();
         shiftRightArray8(ints, rightShifts, result);
+
+        if (IS_BIGENDIAN && rightShifts == 0) {
+            result = UnscaledDecimal128Arithmetic.reverseDecimal(result);
+        }
 
         assertEquals(decodeUnscaledValue(result), expectedResult);
     }
@@ -760,11 +771,21 @@ public class TestUnscaledDecimal128Arithmetic
 
     private static int[] toInt8Array(byte[] bytes)
     {
+        if (IS_BIGENDIAN) {
+            UnscaledDecimal128Arithmetic.reverse(bytes);
+        }
+
         Slice slice = Slices.wrappedBuffer(bytes);
 
         int[] ints = new int[8];
         for (int i = 0; i < ints.length; i++) {
-            ints[i] = slice.getInt(i * Integer.SIZE / Byte.SIZE);
+            if (IS_BIGENDIAN) {
+                int index = ints.length - i - 1;
+                ints[i] = slice.getInt(index * Integer.SIZE / Byte.SIZE + 1);
+            }
+            else {
+                ints[i] = slice.getInt(i * Integer.SIZE / Byte.SIZE);
+            }
         }
         return ints;
     }

@@ -61,6 +61,9 @@ public class TestLongDecimalType
     private Block decimalAsBlock(String value)
     {
         Slice slice = encodeScaledValue(new BigDecimal(value));
+        if (UnscaledDecimal128Arithmetic.IS_BIGENDIAN) {
+            slice = UnscaledDecimal128Arithmetic.reverseLongSliceForBigEndian(slice);
+        }
         BlockBuilder blockBuilder = new VariableWidthBlockBuilder(null, 1, slice.length());
         TYPE.writeSlice(blockBuilder, slice);
         return blockBuilder.build();
