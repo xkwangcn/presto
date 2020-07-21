@@ -43,11 +43,11 @@ final class PrestoSystemRequirements
     {
         verifyJavaVersion();
         verify64BitJvm();
-        verifyOsArchitecture();
-        verifyByteOrder();
-        verifyUsingG1Gc();
+//        verifyOsArchitecture();
+//        verifyByteOrder();
+//        verifyUsingG1Gc();
         verifyFileDescriptor();
-        verifySlice();
+//        verifySlice();
     }
 
     private static void verify64BitJvm()
