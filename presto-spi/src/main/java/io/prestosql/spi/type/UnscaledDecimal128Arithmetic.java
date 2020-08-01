@@ -52,10 +52,12 @@ public final class UnscaledDecimal128Arithmetic
     private static final Slice[] POWERS_OF_TEN = new Slice[MAX_PRECISION];
     private static final Slice[] POWERS_OF_FIVE = new Slice[MAX_PRECISION];
 
+    public static final boolean IS_BIGENDIAN = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);
     private static final int SIGN_LONG_INDEX = 1;
     private static final int SIGN_INT_INDEX = 3;
     private static final long SIGN_LONG_MASK = 1L << 63;
     private static final int SIGN_INT_MASK = 1 << 31;
+
     private static final int SIGN_BYTE_MASK = 1 << 7;
     private static final long ALL_BITS_SET_64 = 0xFFFFFFFFFFFFFFFFL;
     private static final long INT_BASE = 1L << 32;
@@ -117,10 +119,6 @@ public final class UnscaledDecimal128Arithmetic
         for (int i = 1; i < POWERS_OF_TEN_INT.length; ++i) {
             POWERS_OF_TEN_INT[i] = POWERS_OF_TEN_INT[i - 1] * 10;
         }
-
-        if (!ByteOrder.nativeOrder().equals(ByteOrder.LITTLE_ENDIAN)) {
-            throw new IllegalStateException("UnsignedDecimal128Arithmetic is supported on little-endian machines only");
-        }
     }
 
     public static Slice unscaledDecimal()
@@ -170,6 +168,17 @@ public final class UnscaledDecimal128Arithmetic
     public static Slice unscaledDecimal(long unscaledValue)
     {
         long[] longs = new long[NUMBER_OF_LONGS];
+        if (IS_BIGENDIAN) {
+            if (unscaledValue < 0) {
+                longs[1] = -unscaledValue;
+                longs[0] = SIGN_LONG_MASK;
+            }
+            else {
+                longs[1] = unscaledValue;
+            }
+            Slice result = reverseDecimal(Slices.wrappedLongArray(longs));
+            return result;
+        }
         if (unscaledValue < 0) {
             longs[0] = -unscaledValue;
             longs[1] = SIGN_LONG_MASK;
@@ -622,6 +631,13 @@ public final class UnscaledDecimal128Arithmetic
         setRawInt(result, 5, (int) z5);
         setRawInt(result, 6, (int) z6);
         setRawInt(result, 7, (int) z7);
+        if (IS_BIGENDIAN) {
+            if (result.getBytes().length > 32) {
+                long z8 = toUnsignedLong(0);
+                setRawInt(result, 8, (int) z8);
+            }
+            result.setBytes(0, reverseDecimal(result).getBytes());
+        }
     }
 
     public static Slice multiply(Slice decimal, int multiplier)
@@ -722,7 +738,14 @@ public final class UnscaledDecimal128Arithmetic
     {
         long low = getLong(decimal, 0);
         if (low != ALL_BITS_SET_64) {
-            setRawLong(decimal, 0, low + 1);
+            // todo(rui): deal with big endian
+            // setRawLong(decimal, 0, low + 1);
+            unsafe.putLong(decimal.getBase(), decimal.getAddress() + 0, low + 1);
+            if (IS_BIGENDIAN) {
+                byte[] bt = decimal.getBytes(0, SIZE_OF_LONG);
+                UnscaledDecimal128Arithmetic.reverse(bt);
+                decimal.setBytes(0, bt);
+            }
             return;
         }
 
@@ -993,6 +1016,7 @@ public final class UnscaledDecimal128Arithmetic
                 }
             }
             for (int i = 0; i < NUMBER_OF_INTS; i++) {
+                // todo(rui): deal with big endian
                 setRawInt(result, i, values[i]);
             }
             return;
@@ -1235,8 +1259,13 @@ public final class UnscaledDecimal128Arithmetic
         dividend[3] = (highInt(dividendHigh) & ~SIGN_INT_MASK);
 
         if (dividendScaleFactor > 0) {
-            Slice sliceDividend = Slices.wrappedIntArray(dividend);
+            Slice sliceDividend = wrappedIntArray(dividend);
             multiply256(POWERS_OF_FIVE[dividendScaleFactor], sliceDividend, sliceDividend);
+            if (IS_BIGENDIAN) {
+                for (int i = 0; i < dividend.length; i++) {
+                    dividend[i] = getRawInt(sliceDividend, i);
+                }
+            }
             shiftLeftMultiPrecision(dividend, NUMBER_OF_INTS * 2, dividendScaleFactor);
         }
 
@@ -1247,8 +1276,13 @@ public final class UnscaledDecimal128Arithmetic
         divisor[3] = (highInt(divisorHigh) & ~SIGN_INT_MASK);
 
         if (divisorScaleFactor > 0) {
-            Slice sliceDivisor = Slices.wrappedIntArray(divisor);
+            Slice sliceDivisor = wrappedIntArray(divisor);
             multiply256(POWERS_OF_FIVE[divisorScaleFactor], sliceDivisor, sliceDivisor);
+            if (IS_BIGENDIAN) {
+                for (int i = 0; i < divisor.length; i++) {
+                    divisor[i] = getRawInt(sliceDivisor, i);
+                }
+            }
             shiftLeftMultiPrecision(divisor, NUMBER_OF_INTS * 2, divisorScaleFactor);
         }
 
@@ -1580,13 +1614,20 @@ public final class UnscaledDecimal128Arithmetic
     private static void multiplyShiftDestructive(Slice decimal, Slice multiplier, int rightShifts)
     {
         int[] product = new int[NUMBER_OF_INTS * 2];
-        Slice multiplicationResult = Slices.wrappedIntArray(product);
+        Slice multiplicationResult = wrappedIntArray(product);
         multiply256(decimal, multiplier, multiplicationResult);
         shiftRightArray8(product, rightShifts, decimal);
     }
 
     private static void setNegative(Slice decimal, boolean negative)
     {
+        if (IS_BIGENDIAN) {
+            // todo(rui): incorrect in big endian
+            Slice rdecimal = reverseDecimal(decimal);
+            setRawInt(rdecimal, SIGN_INT_INDEX, getInt(decimal, SIGN_INT_INDEX) | (negative ? SIGN_INT_MASK : 0));
+            decimal.setBytes(0, reverseDecimal(rdecimal).getBytes());
+            return;
+        }
         setRawInt(decimal, SIGN_INT_INDEX, getInt(decimal, SIGN_INT_INDEX) | (negative ? SIGN_INT_MASK : 0));
     }
 
@@ -1607,6 +1648,7 @@ public final class UnscaledDecimal128Arithmetic
     {
         setRawLong(to, 0, getRawLong(from, 0));
         setRawLong(to, 1, getRawLong(from, 1));
+        // todo(rui): deal with big endian
     }
 
     private static void pack(Slice decimal, int v0, int v1, int v2, int v3, boolean negative)
@@ -1615,6 +1657,9 @@ public final class UnscaledDecimal128Arithmetic
         setRawInt(decimal, 1, v1);
         setRawInt(decimal, 2, v2);
         setNegativeInt(decimal, v3, negative);
+        if (IS_BIGENDIAN) {
+            decimal.setBytes(0, reverseDecimal(decimal), 0, UNSCALED_DECIMAL_128_SLICE_LENGTH);
+        }
     }
 
     private static void pack(Slice decimal, int v0, int v1, long high, boolean negative)
@@ -1622,12 +1667,20 @@ public final class UnscaledDecimal128Arithmetic
         setRawInt(decimal, 0, v0);
         setRawInt(decimal, 1, v1);
         setNegativeLong(decimal, high, negative);
+        if (IS_BIGENDIAN) {
+            decimal.setBytes(0, reverseDecimal(decimal), 0, decimal.length());
+        }
+        // todo(rui): deal with big endian
     }
 
     private static void pack(Slice decimal, long low, long high, boolean negative)
     {
         setRawLong(decimal, 0, low);
         setNegativeLong(decimal, high, negative);
+        if (IS_BIGENDIAN) {
+            decimal.setBytes(0, reverseDecimal(decimal), 0, decimal.length());
+        }
+        // todo(rui): deal with big endian
     }
 
     public static Slice pack(long low, long high, boolean negative)
@@ -1641,6 +1694,10 @@ public final class UnscaledDecimal128Arithmetic
     {
         setRawLong(result, 0, low);
         setRawLong(result, 1, high | (negative ? SIGN_LONG_MASK : 0));
+        if (IS_BIGENDIAN) {
+            result.setBytes(0, reverseDecimal(result), 0, result.length());
+        }
+        // todo(rui): deal with big endian
     }
 
     public static void pack(long low, long high, boolean negative, Slice result, int resultOffset)
@@ -1681,6 +1738,15 @@ public final class UnscaledDecimal128Arithmetic
         return value;
     }
 
+    public static Slice reverseDecimal(Slice decimal)
+    {
+        byte[] rb = decimal.getBytes();
+        reverse(rb);
+        Slice rdecimal = Slices.allocate(rb.length);
+        rdecimal.setBytes(0, rb);
+        return rdecimal;
+    }
+
     private static boolean exceedsOrEqualTenToThirtyEight(Slice decimal)
     {
         // 10**38=
@@ -1698,7 +1764,7 @@ public final class UnscaledDecimal128Arithmetic
         return low < 0 || low >= 0x098a224000000000L;
     }
 
-    private static void reverse(final byte[] a)
+    public static void reverse(final byte[] a)
     {
         final int length = a.length;
         for (int i = length / 2; i-- != 0; ) {
@@ -1711,6 +1777,7 @@ public final class UnscaledDecimal128Arithmetic
     private static void setToZero(Slice decimal)
     {
         for (int i = 0; i < NUMBER_OF_LONGS; i++) {
+            // todo(rui): deal with big endian
             setRawLong(decimal, i, 0);
         }
     }
@@ -1722,21 +1789,35 @@ public final class UnscaledDecimal128Arithmetic
 
     private static int getRawInt(Slice decimal, int index)
     {
+        if (IS_BIGENDIAN) {
+            // reverse the slice to big endian
+            Slice rdecimal = reverseDecimal(decimal);
+            index = IS_BIGENDIAN ? (decimal.getBytes().length / SIZE_OF_INT - index - 1) : index;
+            return unsafe.getInt(rdecimal.getBase(), rdecimal.getAddress() + SIZE_OF_INT * index);
+        }
         return unsafe.getInt(decimal.getBase(), decimal.getAddress() + SIZE_OF_INT * index);
     }
 
     private static void setRawInt(Slice decimal, int index, int value)
     {
+        index = IS_BIGENDIAN ? (decimal.getBytes().length / SIZE_OF_INT - index - 1) : index;
         unsafe.putInt(decimal.getBase(), decimal.getAddress() + SIZE_OF_INT * index, value);
     }
 
     private static long getRawLong(Slice decimal, int index)
     {
+        if (IS_BIGENDIAN) {
+            // reverse the slice to big endian
+            Slice rdecimal = reverseDecimal(decimal);
+            index = ~index & 1;
+            return unsafe.getLong(rdecimal.getBase(), rdecimal.getAddress() + SIZE_OF_LONG * index);
+        }
         return unsafe.getLong(decimal.getBase(), decimal.getAddress() + SIZE_OF_LONG * index);
     }
 
     private static void setRawLong(Slice decimal, int index, long value)
     {
+        index = IS_BIGENDIAN ? ~index & 1 : index;
         unsafe.putLong(decimal.getBase(), decimal.getAddress() + SIZE_OF_LONG * index, value);
     }
 
@@ -1752,6 +1833,44 @@ public final class UnscaledDecimal128Arithmetic
         if (!condition) {
             throw new IllegalStateException();
         }
+    }
+
+    public static Slice wrappedIntArray(int... array)
+    {
+        Slice result = Slices.wrappedIntArray(array, 0, array.length);
+        result = IS_BIGENDIAN ? reverseIntSliceForBigEndian(result) : result;
+        return result;
+    }
+
+    public static Slice reverseIntSliceForBigEndian(Slice decimal)
+    {
+        int length = decimal.getBytes().length;
+        Slice rdecimal = Slices.allocate(length);
+        for (int i = 0; i < (length / SIZE_OF_INT); i++) {
+            byte[] bt = decimal.getBytes(i * SIZE_OF_INT, SIZE_OF_INT);
+            UnscaledDecimal128Arithmetic.reverse(bt);
+            rdecimal.setBytes(i * SIZE_OF_INT, bt);
+        }
+        return rdecimal;
+    }
+
+    public static Slice wrappedLongArray(long... array)
+    {
+        Slice result = Slices.wrappedLongArray(array, 0, array.length);
+        result = IS_BIGENDIAN ? reverseLongSliceForBigEndian(result) : result;
+        return result;
+    }
+
+    public static Slice reverseLongSliceForBigEndian(Slice decimal)
+    {
+        int length = decimal.getBytes().length;
+        Slice rdecimal = Slices.allocate(length);
+        for (int i = 0; i < (length / SIZE_OF_LONG); i++) {
+            byte[] bt = decimal.getBytes(i * SIZE_OF_LONG, SIZE_OF_LONG);
+            UnscaledDecimal128Arithmetic.reverse(bt);
+            rdecimal.setBytes(i * SIZE_OF_LONG, bt);
+        }
+        return rdecimal;
     }
 
     private UnscaledDecimal128Arithmetic() {}

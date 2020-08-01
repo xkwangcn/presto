@@ -43,10 +43,17 @@ final class PrestoSystemRequirements
     {
         verifyJavaVersion();
         verify64BitJvm();
-        verifyOsArchitecture();
-        verifyByteOrder();
-        verifyUsingG1Gc();
         verifyFileDescriptor();
+
+        // skip the checks for s390x experimental support
+        String osArch = StandardSystemProperty.OS_ARCH.value();
+        if ("s390x".equals(osArch)) {
+            return;
+        }
+
+        verifyByteOrder();
+        verifyOsArchitecture();
+        verifyUsingG1Gc();
         verifySlice();
     }
 
